@@ -2,6 +2,8 @@
 // Use of this source code is governed by a license
 // that can be found in the LICENSE file.
 
+// TODO: test lex errors
+
 package gdl
 
 import (
@@ -79,6 +81,10 @@ func TestLexerNext(t *testing.T) {
 		{"\n// a comment\na b // more", []token{char('\n'), char('\n'), word("a"), word("b")}},
 		{"a(//comment\n)", []token{word("a"), char('('), char('\n'), char(')')}},
 		{" not//a comment", []token{word("not//a"), word("comment")}},
+		// continuations
+		{"a b\\c", []token{word("a"), word("b\\c")}},
+		{"a b\\\nc", []token{word("a"), word("b\\"), char('\n'), word("c")}},
+		{"a b \\\nc", []token{word("a"), word("b"), word("c")}},
 	} {
 		l := newLexer(tc.in)
 		var got []token
