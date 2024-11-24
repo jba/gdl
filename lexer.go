@@ -11,199 +11,68 @@
 package gdl
 
 import (
-	"bufio"
+	"errors"
 	"fmt"
-	"io"
 	"unicode"
 	"unicode/utf8"
 )
 
 type lexer struct {
-	r      *bufio.Reader
+	s      string
 	lineno int
 }
 
-func newLexer(r io.Reader) *lexer {
-	br, ok := r.(*bufio.Reader)
-	if !ok {
-		br = bufio.NewReader(r)
-	}
-	return &lexer{r: br, lineno: 1}
+func newLexer(s string) *lexer {
+	return &lexer{s: s, lineno: 1}
 }
-
-type tokenKind int
 
 const (
-	tokenInvalid tokenKind = iota
-	tokenWord
-	tokenEOF
+	tokenInvalid = unicode.ReplacementChar
+	tokenWord    = 'w'
+	tokenString  = 's' // double-quoted Go string
+	tokenEOF     = 'E'
 )
 
-const (
-	betweenTokens = iota
-	afterSlash
-	afterBackslash
-	inComment
-	inWord
-	inEscapedString
-	inEscapedStringAfterBacklash
-	inRawString
-)
+func (l *lexer) next() (kind rune, word string, err error) {
+	s := l.s
+	defer func() { l.s = s }()
 
-func (l *lexer) nextToken() (tokenKind, string, error) {
-	var word []rune
-	state := betweenTokens
-	for {
-		r, sz, err := l.r.ReadRune()
-		if err != nil {
-			return tokenInvalid, "", fmt.Errorf("%d: %w", l.lineno, err)
-		}
-		if r == '\n' {
-			l.lineno++
-		}
-		switch state {
-		case betweenTokens:
-			if r != '\n' && unicode.IsSpace(r) {
-				continue
-			}
-			switch r {
-			case '\n', '(', ')', '{', '}':
-				return tokenKind(r), "", nil
-			case '/':
-				state = afterSlash
-			case '\\':
-				state = afterBackslash
-			case '"':
-				state = inEscapedString
-			case '`':
-				state = inRawString
-			default:
-				state = inWord
-				word = []rune{r}
-			}
-
-		case afterSlash:
-			if r == '/' {
-				state = inComment
-			} else {
-				state = inWord
-				word = []rune{r}
-			}
-
-		case afterBackslash:
-			if r == '\n' {
-				// Line continuation.
-				state = betweenTokens
-			} else {
-				state = inWord
-				word = []rune{r}
-			}
-
-		case inComment:
-			if r == '\n' {
-				state = betweenTokens
-			}
-
-		case inWord:
-			if unicode.IsSpace(r) {
-				return tokenWord, string(word), nil
-			}
-			switch r {
-			case '(', ')', '{', '}':
-				l.ungotten = r
-				return tokenWord, string(word), nil
-			default:
-				word = append(word, r)
-			}
-
-		case inRawString:
-			if r == '\' {
-				return tokenWord, string(word), nil
-			} else {
-				word = append(word, r)
-			}
-
-		case inEscapedString:
-			// TODO: too many states here, with \uxxxx and \OOO.
-			// Also, we want to use strconv.Unquote.
-			
-
-		default:
-			panic("bad state")
-		}
-
-	}
-}
-
-func (l *lexer) nextRune() rune {
-	r, _, err := l.r.ReadRune()
-	if err != nil {
-		l.err = err
-		r = unicode.ReplacementChar
-	}
-	if r == '\n'{
-		r.lineno++
-	}
-	return r
-}
-
-// reports whether it saw end
-// func (l *lexer) scanUntilRune(end rune) ([]rune, bool) {
-// 	for r := l.nextRune(); l.err == nil; r = l.nextRune() {
-// 		if r == end {
-// 			return true
-// 		}
-// 		l.word = append(l.word, r)
-
-
-// 		r, sz, err := l.r.ReadRune()
-// 		if err != nil {
-			
-// 		}
-// 	}
-
-
-	
-// }
-
-func skipSpace(s string) string {
-	for i, r := range s {
-		if r == '\n'  || !unicode.IsSpace(r) {
-			return s[i:]
-		}
-	}
-	return ""
-}
-
-func (l *lexer) next(s string) (tokenKind, string, string, error) {
-	loop:
+loop:
 	for {
 		s = skipSpace(s)
 		if len(s) == 0 {
-			return tokenEOF, "", ""
+			return tokenEOF, "", nil
 		}
 		c, sz := utf8.DecodeRuneInString(s)
-		if c== '\n' {
+		if c == '\n' {
 			l.lineno++
 		}
-		s= s[sz:]
+		s = s[sz:]
 		switch c {
 		case '\n', '(', ')', '{', '}':
-			return tokenKind(r), "", s
+			return c, "", nil
+
 		case '/':
+			// Double slash is a comment to EOL.
 			if len(s) > 0 && s[0] == '/' {
-				for i, r := range s{
+				for i, r := range s {
 					if r == '\n' {
 						// This newline is definitely a token.
 						s = s[i:]
 						continue loop
 					}
 				}
-				return tokenEOF, "", ""
+				return tokenEOF, "", nil
+			}
+			// Single slash starts a word.
+			var word string
+			word, s = scanWord(s)
+			return tokenWord, word, nil
+
 		case '\\':
 			s = skipSpace(s)
 			if len(s) == 0 {
-				return tokenInvalid, "", "", errors.New("backlash at EOF")
+				return tokenInvalid, "", errors.New("backlash at EOF")
 			}
 			if s[0] == '\n' {
 				// Continuation line. The newline is not a token.
@@ -213,44 +82,64 @@ func (l *lexer) next(s string) (tokenKind, string, string, error) {
 				s = s[1:]
 				continue loop
 			}
+
 		case '`':
 			start := l.lineno
 			for i, r := range s {
-				if r == '\n' {l.lineno++}
-				else if r == '`' {
-					return tokenRawString, s[:i], s[i+1:]
+				if r == '\n' {
+					l.lineno++
+				} else if r == '`' {
+					return tokenWord, s[:i], nil
 				}
 			}
-			return tokenInvalid, "", "", fmt.Errorf("unterminated raw string started on line %d", start)
+			return tokenInvalid, "", fmt.Errorf("unterminated raw string started on line %d", start)
+
 		case '"':
 			// Just scan to the end; strconv.Unquote will do the rest.
 			start := l.lineno
 			backslashed := false
 			for i, r := range s {
 				if r == '\n' {
-					return tokenInvalid, "", "", fmt.Errorf("newline in double-quoted string started on line %d", start)
+					return tokenInvalid, "", fmt.Errorf("newline in double-quoted string started on line %d", start)
 				}
-				if r == '"' && !backslashed{
-					return tokenString, s[:i+1], s[i+1:], nil
+				if r == '"' && !backslashed {
+					return tokenString, s[:i+1], nil
 				}
 				if r == '\\' {
 					backslashed = !backslashed
 				}
 			}
-			return tokenInvalid, "", "", fmt.Errorf("unterminated double-quoted string started on line %d", start)
+			return tokenInvalid, "", fmt.Errorf("unterminated double-quoted string started on line %d", start)
+
 		default: // a word
 			// TODO: does a comment end a word? A single slash does not.
-			var i int
-			var r rune
-			wordloop:
-			for i, r = range s {
-				if unicode.IsSpace(r) {break}
-				switch r {
-				case '\n', '(', ')', '{', '}':
-					break wordloop
-				}
-			}
-			return tokenWord, s[:i], s[i:], nil
+			var word string
+			word, s = scanWord(s)
+			return tokenWord, word, nil
+		}
+		panic("unreachable")
+	}
+}
+
+// stop chars: any whitespace; parens; braces.
+func scanWord(s string) (string, string) {
+	for i, r := range s {
+		if unicode.IsSpace(r) {
+			return s[:i], s[i:]
+		}
+		switch r {
+		case '(', ')', '{', '}':
+			return s[:i], s[i:]
 		}
 	}
+	return s, ""
+}
+
+func skipSpace(s string) string {
+	for i, r := range s {
+		if r == '\n' || !unicode.IsSpace(r) {
+			return s[i:]
+		}
+	}
+	return ""
 }
