@@ -4,6 +4,10 @@
 
 // TODO: match the lexical properties of go.mod parsing.
 
+// TODO: record token position for gdlfmt.
+
+// TODO: fuzz the lexer.
+
 // TODO: any token starting with a digit should be interpreted as a number.
 // But what about '-'? We want to support -foo as a bareword without the
 // the problem that -12a is a bad number.
@@ -27,13 +31,19 @@ func newLexer(s string) *lexer {
 }
 
 const (
-	tokenInvalid = unicode.ReplacementChar
-	tokenWord    = 'w'
-	tokenString  = 's' // double-quoted Go string
-	tokenEOF     = 'E'
+	tokWord   = 'w'
+	tokString = 's' // double-quoted or backquote Go string
+	tokEOF    = 'E'
 )
 
-func (l *lexer) next() (kind rune, word string, err error) {
+type token struct {
+	kind rune
+	val  string
+}
+
+var eof = token{kind: tokEOF}
+
+func (l *lexer) next() (_ token, err error) {
 	s := l.s
 	defer func() { l.s = s }()
 
@@ -41,20 +51,21 @@ loop:
 	for {
 		s = skipSpace(s)
 		if len(s) == 0 {
-			return tokenEOF, "", nil
+			return eof, nil
 		}
 		c, sz := utf8.DecodeRuneInString(s)
 		if c == '\n' {
 			l.lineno++
 		}
-		s = s[sz:]
 		switch c {
 		case '\n', '(', ')', '{', '}':
-			return c, "", nil
+			s = s[sz:]
+			return token{kind: c}, nil
 
 		case '/':
 			// Double slash is a comment to EOL.
-			if len(s) > 0 && s[0] == '/' {
+			if len(s) > 1 && s[1] == '/' {
+				s = s[2:]
 				for i, r := range s {
 					if r == '\n' {
 						// This newline is definitely a token.
@@ -62,17 +73,18 @@ loop:
 						continue loop
 					}
 				}
-				return tokenEOF, "", nil
+				s = s[sz:]
+				return eof, nil
 			}
 			// Single slash starts a word.
 			var word string
 			word, s = scanWord(s)
-			return tokenWord, word, nil
+			return token{kind: tokWord, val: word}, nil
 
 		case '\\':
-			s = skipSpace(s)
+			s = skipSpace(s[1:])
 			if len(s) == 0 {
-				return tokenInvalid, "", errors.New("backlash at EOF")
+				return token{}, errors.New("backlash at EOF")
 			}
 			if s[0] == '\n' {
 				// Continuation line. The newline is not a token.
@@ -85,37 +97,44 @@ loop:
 
 		case '`':
 			start := l.lineno
-			for i, r := range s {
-				if r == '\n' {
+			for i, r := range s[1:] {
+				if r == '\n' { // TODO: \r as well?
 					l.lineno++
 				} else if r == '`' {
-					return tokenWord, s[:i], nil
+					// Include quotes, for strconv.Unquote.
+					val := s[:i+2]
+					s = s[i+2:]
+					return token{kind: tokString, val: val}, nil
 				}
 			}
-			return tokenInvalid, "", fmt.Errorf("unterminated raw string started on line %d", start)
+			return token{}, fmt.Errorf("unterminated raw string started on line %d", start)
 
 		case '"':
 			// Just scan to the end; strconv.Unquote will do the rest.
 			start := l.lineno
 			backslashed := false
-			for i, r := range s {
+			for i, r := range s[1:] {
 				if r == '\n' {
-					return tokenInvalid, "", fmt.Errorf("newline in double-quoted string started on line %d", start)
+					return token{}, fmt.Errorf("newline in double-quoted string started on line %d", start)
 				}
 				if r == '"' && !backslashed {
-					return tokenString, s[:i+1], nil
+					val := s[:i+2]
+					s = s[i+2:]
+					return token{kind: tokString, val: val}, nil
 				}
-				if r == '\\' {
-					backslashed = !backslashed
+				if backslashed {
+					backslashed = false
+				} else if r == '\\' {
+					backslashed = true
 				}
 			}
-			return tokenInvalid, "", fmt.Errorf("unterminated double-quoted string started on line %d", start)
+			return token{}, fmt.Errorf("unterminated double-quoted string started on line %d", start)
 
 		default: // a word
 			// TODO: does a comment end a word? A single slash does not.
 			var word string
 			word, s = scanWord(s)
-			return tokenWord, word, nil
+			return token{kind: tokWord, val: word}, nil
 		}
 		panic("unreachable")
 	}
