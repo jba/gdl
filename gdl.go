@@ -2,6 +2,24 @@
 // Use of this source code is governed by a license
 // that can be found in the LICENSE file.
 
+// gdl implements a decription language based on the file format of go.mod
+// and similar files.
+// The format is line-oriented.
+// If the last non-whitespace character on a line is a backslash, the line continues
+// onto the next line.
+// Comments begin with // and extend to the end of the line (backslashes are ignored).
+//
+// Each line is a sequence of words separated by whitespace.
+// A word can include whitespace by enclosing it in double quotes or backticks.
+// Both kinds of quotations are interpreted according to Go syntax.
+// A word that looks like an integer is converted to an int64.
+// A word that looks like a float-point number is converted to a float64.
+// The words true and false are converted to bools.
+// No other processing is done to a word.
+
+// # Groups
+//
+// TODO
 package gdl
 
 import (
@@ -11,6 +29,7 @@ import (
 	"strconv"
 )
 
+// ParseFile calls [Parse] on the contents of the file.
 func ParseFile(filename string) ([][]any, error) {
 	data, err := os.ReadFile(filename)
 	if err != nil {
@@ -19,6 +38,8 @@ func ParseFile(filename string) ([][]any, error) {
 	return parse(string(data), filename)
 }
 
+// Parse parses the string and returns one []any per logical line.
+// Each element of a line slice is either a string, int64, float64 or bool.
 func Parse(s string) ([][]any, error) {
 	return parse(s, "<no file>")
 }

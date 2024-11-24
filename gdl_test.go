@@ -63,6 +63,13 @@ func TestParse(t *testing.T) {
 				{"a", "b", "d"},
 			},
 		},
+		{
+			"(\na\nb\n)",
+			[][]any{
+				{"a"},
+				{"b"},
+			},
+		},
 	} {
 		got, err := Parse(tc.in)
 		if err != nil {

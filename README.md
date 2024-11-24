@@ -35,16 +35,6 @@ foo bar
 foo baz
 ```
 
-A final "{" behaves the same. The only difference is that no other lines may
-share the same prefix. So if a file contains this text:
-```
-command list {
-  foo
-  bar
-}
-```
-then "command list" cannot be the prefix of any other line.
-
 ## Mapping To JSON
 
 A JSON object `{"a": 1, "b": 2}` could be represented as
