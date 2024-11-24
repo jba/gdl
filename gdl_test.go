@@ -10,6 +10,8 @@ import (
 	"github.com/google/go-cmp/cmp"
 )
 
+// TODO: test errors
+
 func TestParse(t *testing.T) {
 	for _, tc := range []struct {
 		in   string
@@ -26,10 +28,45 @@ func TestParse(t *testing.T) {
 				{"y", 22.5, true},
 			},
 		},
+		{
+			"a (\nb c)",
+			[][]any{
+				{"a", "b", "c"},
+			},
+		},
+		{
+			`a (
+				b x
+				c y
+			)`,
+			[][]any{
+				{"a", "b", "x"},
+				{"a", "c", "y"},
+			},
+		},
+		{
+			`a (
+				b x
+				
+				// second
+				c y
+			)`,
+			[][]any{
+				{"a", "b", "x"},
+				{"a", "c", "y"},
+			},
+		},
+		{
+			"a b (\nc\nd\n)",
+			[][]any{
+				{"a", "b", "c"},
+				{"a", "b", "d"},
+			},
+		},
 	} {
 		got, err := Parse(tc.in)
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("%q: %v", tc.in, err)
 		}
 		if !cmp.Equal(got, tc.want) {
 			t.Errorf("%q:\ngot  %v\nwant %v", tc.in, got, tc.want)

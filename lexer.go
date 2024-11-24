@@ -22,8 +22,11 @@ import (
 )
 
 type lexer struct {
-	s      string
-	lineno int
+	s        string
+	lineno   int
+	ungotten bool
+	untok    token
+	unerr    error
 }
 
 func newLexer(s string) *lexer {
@@ -32,7 +35,7 @@ func newLexer(s string) *lexer {
 
 const (
 	tokWord   = 'w'
-	tokString = 's' // double-quoted or backquote Go string
+	tokString = 's' // double-quoted or backquoted Go string
 	tokEOF    = 'E'
 )
 
@@ -41,9 +44,19 @@ type token struct {
 	val  string
 }
 
-var eof = token{kind: tokEOF}
+func (l *lexer) peek() rune {
+	if !l.ungotten {
+		l.untok, l.unerr = l.next()
+		l.ungotten = true
+	}
+	return l.untok.kind
+}
 
 func (l *lexer) next() (_ token, err error) {
+	if l.ungotten {
+		l.ungotten = false
+		return l.untok, l.unerr
+	}
 	s := l.s
 	defer func() { l.s = s }()
 
@@ -51,7 +64,7 @@ loop:
 	for {
 		s = skipSpace(s)
 		if len(s) == 0 {
-			return eof, nil
+			return token{kind: tokEOF}, nil
 		}
 		c, sz := utf8.DecodeRuneInString(s)
 		if c == '\n' {
@@ -74,7 +87,7 @@ loop:
 					}
 				}
 				s = s[sz:]
-				return eof, nil
+				return token{kind: tokEOF}, nil
 			}
 			// Single slash starts a word.
 			var word string

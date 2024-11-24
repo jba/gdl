@@ -11,43 +11,6 @@ import (
 	"testing"
 )
 
-func TestSkipSpace(t *testing.T) {
-	for _, tc := range []struct {
-		in   string
-		want string
-	}{
-		{"", ""},
-		{"foo", "foo"},
-		{" \tfoo", "foo"},
-		{" \t\nfoo", "\nfoo"},
-		{" \t\n foo", "\n foo"},
-	} {
-		got := skipSpace(tc.in)
-		if got != tc.want {
-			t.Errorf("%q: got %q, want %q", tc.in, got, tc.want)
-		}
-	}
-}
-
-func TestScanWord(t *testing.T) {
-	for _, tc := range []struct {
-		in                 string
-		wantWord, wantRest string
-	}{
-		{"foo", "foo", ""},
-		{"foo bar", "foo", " bar"},
-		{"/path/name x", "/path/name", " x"},
-		{"f(x)", "f", "(x)"},
-		{"a/%@{b}", "a/%@", "{b}"},
-		{"w\ny", "w", "\ny"},
-	} {
-		gotWord, gotRest := scanWord(tc.in)
-		if gotWord != tc.wantWord || gotRest != tc.wantRest {
-			t.Errorf("%q: got (%q, %q), want (%q, %q)", tc.in, gotWord, gotRest, tc.wantWord, tc.wantRest)
-		}
-	}
-}
-
 func TestLexerNext(t *testing.T) {
 	char := func(r rune) token { return token{kind: r} }
 	word := func(s string) token { return token{kind: tokWord, val: s} }
@@ -100,6 +63,43 @@ func TestLexerNext(t *testing.T) {
 		}
 		if !slices.Equal(got, tc.want) {
 			t.Errorf("%q:\ngot  %v\nwant %v", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestSkipSpace(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want string
+	}{
+		{"", ""},
+		{"foo", "foo"},
+		{" \tfoo", "foo"},
+		{" \t\nfoo", "\nfoo"},
+		{" \t\n foo", "\n foo"},
+	} {
+		got := skipSpace(tc.in)
+		if got != tc.want {
+			t.Errorf("%q: got %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestScanWord(t *testing.T) {
+	for _, tc := range []struct {
+		in                 string
+		wantWord, wantRest string
+	}{
+		{"foo", "foo", ""},
+		{"foo bar", "foo", " bar"},
+		{"/path/name x", "/path/name", " x"},
+		{"f(x)", "f", "(x)"},
+		{"a/%@{b}", "a/%@", "{b}"},
+		{"w\ny", "w", "\ny"},
+	} {
+		gotWord, gotRest := scanWord(tc.in)
+		if gotWord != tc.wantWord || gotRest != tc.wantRest {
+			t.Errorf("%q: got (%q, %q), want (%q, %q)", tc.in, gotWord, gotRest, tc.wantWord, tc.wantRest)
 		}
 	}
 }
