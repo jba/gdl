@@ -76,7 +76,7 @@ func parse(s, filename string) (_ []Value, err error) {
 	}
 }
 
-// Called at line start. Ends at the next line start.
+// Called at line start. Ends at the next line start or
 // Only called when there is a value.
 func parseValue(tok token, lex *lexer) (Value, error) {
 	var head []string
@@ -115,7 +115,11 @@ func parseValue(tok token, lex *lexer) (Value, error) {
 			return Value{Head: head, List: list}, nil
 
 		case ')':
-			return Value{}, errors.New("unexpected close paren")
+			lex.unget(tok)
+			if len(head) == 0 {
+				panic("bad close paren")
+			}
+			return Value{Head: head}, nil
 
 		case tokErr:
 			return Value{}, tok.err
@@ -129,12 +133,6 @@ func parseValue(tok token, lex *lexer) (Value, error) {
 
 // Called just after '('. Ends at start of line.
 func parseParenList(lex *lexer) ([]Value, error) {
-	// Next token must be newline.
-	tok := lex.next()
-	if tok.kind != '\n' {
-		return nil, cmp.Or(tok.err, errors.New("open paren must be followed by newline"))
-	}
-
 	var vs []Value
 	for {
 		tok := skipNewlines(lex)

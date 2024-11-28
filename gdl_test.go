@@ -35,21 +35,21 @@ func TestParseValue(t *testing.T) {
 			[]string{"x"},
 			[]Value{{Head: []string{"a", "b"}}},
 		},
-		// {
-		// 	"x(a b\n)",
-		// 	[]string{"x"},
-		// 	[]Value{{Head: []string{"a", "b"}}},
-		// },
-		// {
-		// 	"x(a b )",
-		// 	[]string{"x"},
-		// 	[]Value{{Head: []string{"a", "b"}}},
-		// },
-		// {
-		// 	"x(a b)",
-		// 	[]string{"x"},
-		// 	[]Value{{Head: []string{"a", "b"}}},
-		// },
+		{
+			"x(a b\n)",
+			[]string{"x"},
+			[]Value{{Head: []string{"a", "b"}}},
+		},
+		{
+			"x(a b )",
+			[]string{"x"},
+			[]Value{{Head: []string{"a", "b"}}},
+		},
+		{
+			"x(a b)",
+			[]string{"x"},
+			[]Value{{Head: []string{"a", "b"}}},
+		},
 		{
 			"x\n\n",
 			[]string{"x"},
@@ -90,9 +90,7 @@ func TestParseValueError(t *testing.T) {
 		want string
 	}{
 		{"", "EOF"},
-		{"()", "open paren must be followed"},
 		{"(\n) x", "close paren must be followed"},
-		{"x y )", "unexpected close paren"},
 	} {
 		lex := newLexer(tc.in)
 		_, err := parseValue(lex.next(), lex)
@@ -105,71 +103,121 @@ func TestParseValueError(t *testing.T) {
 	}
 }
 
-// func TestParse(t *testing.T) {
-// 	for _, tc := range []struct {
-// 		in   string
-// 		want []Value
-// 	}{
-// 		{"", nil},
-// 		{"x", []Value{{"x"}}},
-// 		{"x y z", [][]any{{"x", "y", "z"}}},
-// 		{"x 2.5 3 true", [][]any{{"x", 2.5, int64(3), true}}},
-// 		{
-// 			"// a file\nx 17 \"true\"\ny 22.5 \\\ntrue",
-// 			[][]any{
-// 				{"x", int64(17), "true"},
-// 				{"y", 22.5, true},
-// 			},
-// 		},
-// 		{
-// 			"a (\nb c)",
-// 			[][]any{
-// 				{"a", "b", "c"},
-// 			},
-// 		},
-// 		{
-// 			`a (
-// 				b x
-// 				c y
-// 			)`,
-// 			[][]any{
-// 				{"a", "b", "x"},
-// 				{"a", "c", "y"},
-// 			},
-// 		},
-// 		{
-// 			`a (
-// 				b x
+func TestParse(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want []Value
+	}{
+		{"", nil},
+		{"x", []Value{{Head: []string{"x"}}}},
+		{"x yz", []Value{{Head: []string{"x", "yz"}}}},
+		{"x 2.5 3 true", []Value{{Head: []string{"x", "2.5", "3", "true"}}}},
+		{
+			"// a file\nx 17 \"true\"\ny 22.5 \\\ntrue",
+			[]Value{
+				{Head: []string{"x", "17", "true"}},
+				{Head: []string{"y", "22.5", "true"}},
+			},
+		},
+		{
+			"a (\nb c)",
+			[]Value{
+				{
+					Head: []string{"a"},
+					List: []Value{
+						{Head: []string{"b", "c"}},
+					},
+				},
+			},
+		},
+		{
+			`a (
+				b x
+				c y
+			)`,
+			[]Value{
+				{
+					Head: []string{"a"},
+					List: []Value{
+						{Head: []string{"b", "x"}},
+						{Head: []string{"c", "y"}},
+					},
+				},
+			},
+		},
+		{
+			`a (
+				b x
 
-// 				// second
-// 				c y
-// 			)`,
-// 			[][]any{
-// 				{"a", "b", "x"},
-// 				{"a", "c", "y"},
-// 			},
-// 		},
-// 		{
-// 			"a b (\nc\nd\n)",
-// 			[][]any{
-// 				{"a", "b", "c"},
-// 				{"a", "b", "d"},
-// 			},
-// 		},
-// 		{
-// 			"(\na\nb\n)",
-// 			[][]any{
-// 				{"a"},
-// 				{"b"},
-// 			},
-// 		},
-// 	} {
-// 		got, err := Parse(tc.in)
-// 		if err != nil {
-// 			t.Fatalf("%q: %v", tc.in, err)
-// 		}
-// 		if !cmp.Equal(got, tc.want) {
-// 			t.Errorf("%q:\ngot  %v\nwant %v", tc.in, got, tc.want)
-// 		}
-// 	}
-// }
+				// second
+				c y
+			)`,
+			[]Value{
+				{
+					Head: []string{"a"},
+					List: []Value{
+						{Head: []string{"b", "x"}},
+						{Head: []string{"c", "y"}},
+					},
+				},
+			},
+		},
+		{
+			"a b (\nc\nd\n)",
+			[]Value{
+				{
+					Head: []string{"a", "b"},
+					List: []Value{
+						{Head: []string{"c"}},
+						{Head: []string{"d"}},
+					},
+				},
+			},
+		},
+		{
+			"(\na\nb\n)",
+			[]Value{
+				{
+					List: []Value{
+						{Head: []string{"a"}},
+						{Head: []string{"b"}},
+					},
+				},
+			},
+		},
+		{
+			"(a b)",
+			[]Value{
+				{
+					List: []Value{
+						{Head: []string{"a", "b"}},
+					},
+				},
+			},
+		},
+		{
+			"(a b)\nc(d)",
+			[]Value{
+				{
+					List: []Value{
+						{Head: []string{"a", "b"}},
+					},
+				},
+				{
+					Head: []string{"c"},
+					List: []Value{
+						{Head: []string{"d"}},
+					},
+				},
+			},
+		},
+	} {
+		got, err := Parse(tc.in)
+		if err != nil {
+			t.Fatalf("%q: %v", tc.in, err)
+		}
+		if g, w := format.Sprint(got), format.Sprint(tc.want); g != w {
+			t.Errorf("%q:\ngot  %s\nwant %s", tc.in, g, w)
+		}
+	}
+}
