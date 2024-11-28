@@ -26,7 +26,7 @@ type lexer struct {
 	lineno   int
 	ungotten bool
 	untok    token
-	unerr    error
+	errtok   token
 }
 
 func newLexer(s string) *lexer {
@@ -37,26 +37,41 @@ const (
 	tokWord   = 'w'
 	tokString = 's' // double-quoted or backquoted Go string
 	tokEOF    = 'E'
+	tokErr    = 'e'
 )
 
 type token struct {
 	kind rune
 	val  string
+	err  error
+}
+
+func (l *lexer) error(err error) token {
+	if l.errtok.kind == tokErr {
+		panic("error called twice")
+	}
+	l.errtok = token{kind: tokErr, err: err}
+	return l.errtok
 }
 
 func (l *lexer) peek() rune {
 	if !l.ungotten {
-		l.untok, l.unerr = l.next()
+		l.untok = l.next()
 		l.ungotten = true
 	}
 	return l.untok.kind
 }
 
-func (l *lexer) next() (_ token, err error) {
+func (l *lexer) next() token {
 	if l.ungotten {
 		l.ungotten = false
-		return l.untok, l.unerr
+		return l.untok
 	}
+	// Errors are sticky.
+	if l.errtok.kind == tokErr {
+		return l.errtok
+	}
+
 	s := l.s
 	defer func() { l.s = s }()
 
@@ -64,7 +79,7 @@ loop:
 	for {
 		s = skipSpace(s)
 		if len(s) == 0 {
-			return token{kind: tokEOF}, nil
+			return token{kind: tokEOF}
 		}
 		c, sz := utf8.DecodeRuneInString(s)
 		if c == '\n' {
@@ -73,7 +88,7 @@ loop:
 		switch c {
 		case '\n', '(', ')', '{', '}':
 			s = s[sz:]
-			return token{kind: c}, nil
+			return token{kind: c}
 
 		case '/':
 			// Double slash is a comment to EOL.
@@ -87,17 +102,17 @@ loop:
 					}
 				}
 				s = s[sz:]
-				return token{kind: tokEOF}, nil
+				return token{kind: tokEOF}
 			}
 			// Single slash starts a word.
 			var word string
 			word, s = scanWord(s)
-			return token{kind: tokWord, val: word}, nil
+			return token{kind: tokWord, val: word}
 
 		case '\\':
 			s = skipSpace(s[1:])
 			if len(s) == 0 {
-				return token{}, errors.New("backlash at EOF")
+				return l.error(errors.New("backlash at EOF"))
 			}
 			if s[0] == '\n' {
 				// Continuation line. The newline is not a token.
@@ -117,10 +132,10 @@ loop:
 					// Include quotes, for strconv.Unquote.
 					val := s[:i+2]
 					s = s[i+2:]
-					return token{kind: tokString, val: val}, nil
+					return token{kind: tokString, val: val}
 				}
 			}
-			return token{}, fmt.Errorf("unterminated raw string started on line %d", start)
+			return l.error(fmt.Errorf("unterminated raw string started on line %d", start))
 
 		case '"':
 			// Just scan to the end; strconv.Unquote will do the rest.
@@ -128,12 +143,12 @@ loop:
 			backslashed := false
 			for i, r := range s[1:] {
 				if r == '\n' {
-					return token{}, fmt.Errorf("newline in double-quoted string started on line %d", start)
+					return l.error(fmt.Errorf("newline in double-quoted string started on line %d", start))
 				}
 				if r == '"' && !backslashed {
 					val := s[:i+2]
 					s = s[i+2:]
-					return token{kind: tokString, val: val}, nil
+					return token{kind: tokString, val: val}
 				}
 				if backslashed {
 					backslashed = false
@@ -141,13 +156,13 @@ loop:
 					backslashed = true
 				}
 			}
-			return token{}, fmt.Errorf("unterminated double-quoted string started on line %d", start)
+			return l.error(fmt.Errorf("unterminated double-quoted string started on line %d", start))
 
 		default: // a word
 			// TODO: does a comment end a word? A single slash does not.
 			var word string
 			word, s = scanWord(s)
-			return token{kind: tokWord, val: word}, nil
+			return token{kind: tokWord, val: word}
 		}
 		panic("unreachable")
 	}

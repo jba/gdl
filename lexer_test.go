@@ -52,9 +52,9 @@ func TestLexerNext(t *testing.T) {
 		l := newLexer(tc.in)
 		var got []token
 		for {
-			tok, err := l.next()
-			if err != nil {
-				t.Fatalf("%q: lexer error: %v", tc.in, err)
+			tok := l.next()
+			if tok.kind == tokErr {
+				t.Fatalf("%q: lexer error: %v", tc.in, tok.err)
 			}
 			if tok.kind == tokEOF {
 				break

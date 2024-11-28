@@ -2,35 +2,48 @@
 // Use of this source code is governed by a license
 // that can be found in the LICENSE file.
 
+// TODO: allow open paren to be followed by a value (but not close, that would be confusing)
+
 // gdl implements a decription language based on the file format of go.mod
 // and similar files.
 // The format is line-oriented.
 // If the last non-whitespace character on a line is a backslash, the line continues
 // onto the next line.
-// Comments begin with // and extend to the end of the line (backslashes are ignored).
+// Comments begin with // and extend to the end of the line.
+// Backslashes are ignored inside a comment.
 //
 // Each line is a sequence of words separated by whitespace.
 // A word can include whitespace by enclosing it in double quotes or backticks.
 // Both kinds of quotations are interpreted according to Go syntax.
+
+// An open parenthesis at the end of a line starts a sequence, which ends on a line
+// consisting only of a close parenthesis.
+
 // A word that looks like an integer is converted to an int64.
 // A word that looks like a float-point number is converted to a float64.
 // The words true and false are converted to bools.
 // No other processing is done to a word.
-
-// # Groups
-//
-// TODO
 package gdl
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
+	"io"
+	"iter"
 	"os"
+	"slices"
 	"strconv"
 )
 
+type Value struct {
+	Head []string
+	List []Value
+}
+
 // ParseFile calls [Parse] on the contents of the file.
-func ParseFile(filename string) ([][]any, error) {
+// The file is an implicit list of values.
+func ParseFile(filename string) ([]Value, error) {
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, err
@@ -38,110 +51,129 @@ func ParseFile(filename string) ([][]any, error) {
 	return parse(string(data), filename)
 }
 
-// Parse parses the string and returns one []any per logical line.
+// Parse parses the string and returns a slice of [Value]s.
 // Each element of a line slice is either a string, int64, float64 or bool.
-func Parse(s string) ([][]any, error) {
+func Parse(s string) ([]Value, error) {
 	return parse(s, "<no file>")
 }
 
-func parse(s, filename string) (_ [][]any, err error) {
+// parse parses s. The filename is only for display in errors.
+func parse(s, filename string) (_ []Value, err error) {
 	lex := newLexer(s)
-	var lines [][]any
-	var curline []any
+	iter, errf := values(lex)
+	vals := slices.Collect(iter)
+	if err := errf(); err != nil {
+		return nil, fmt.Errorf("%s:%d: %w", filename, lex.lineno, err)
+	}
+	return vals, nil
+}
 
-	defer func() {
+func values(lex *lexer) (iter.Seq[Value], func() error) {
+	var err error
+	iter := func(yield func(Value) bool) {
+		var v Value
+		v, err = parseValue(lex)
+		if err == io.EOF {
+			err = nil
+			return
+		}
 		if err != nil {
-			err = fmt.Errorf("%s:%d: %w", filename, lex.lineno, err)
+			return
 		}
-	}()
+		if !yield(v) {
+			return
+		}
+	}
+	return iter, func() error { return err }
+}
 
-	var parseRec func(rune, []any) error
-	parseRec = func(end rune, prefix []any) error {
-		curline = prefix
-		for {
-			tok, err := lex.next()
+// Called at line start. Ends at the next line start.
+func parseValue(lex *lexer) (Value, error) {
+	var head []string
+	for {
+		tok := lex.next()
+		switch tok.kind {
+		case tokEOF:
+			// Accept a value that isn't followed by a newline.
+			if len(head) > 0 {
+				return Value{Head: head}, nil
+			}
+			return Value{}, io.EOF
+
+		case '\n':
+			if len(head) > 0 {
+				return Value{Head: head}, nil
+			}
+			// blank line
+			continue
+
+		case tokWord:
+			head = append(head, tok.val)
+
+		case tokString:
+			unq, err := strconv.Unquote(tok.val)
 			if err != nil {
-				return err
+				return Value{}, err
 			}
+			head = append(head, unq)
 
-			switch tok.kind {
-			case end:
-				if len(curline) > len(prefix) {
-					lines = append(lines, curline)
-				}
-				// A close delimiter must be followed by a newline.
-				// We don't support things like "a (\nb\n) c".
-				if tok.kind != tokEOF {
-					if k := lex.peek(); k != '\n' && k != tokEOF {
-						return errors.New("close delimiter must be followed by newline or EOF")
-					}
-				}
-				return nil
-
-			case tokEOF:
-				// We expected a close delimiter.
-				// TODO: give line of open delim
-				return errors.New("missing close delimiter")
-
-			case '\n':
-				// Ignore blank lines, even if there is a prefix.
-				if len(curline) > len(prefix) {
-					lines = append(lines, curline)
-					curline = prefix
-				}
-
-			case tokWord:
-				curline = append(curline, parseWord(tok.val))
-
-			case tokString:
-				unq, err := strconv.Unquote(tok.val)
-				if err != nil {
-					return err
-				}
-				curline = append(curline, unq)
-
-			case '(':
-				// Delimiter must end a line.
-				if k := lex.peek(); k != '\n' && k != tokEOF {
-					return errors.New("delimiter not at end of line")
-				}
-				// Make the prefix safe for multiple appends.
-				prefix = curline[:len(curline):len(curline)]
-				return parseRec(')', prefix)
-
-				// TODO: enforce brace prefix uniqueness.
-			case '{':
-				// Make the prefix safe for multiple appends.
-				prefix = curline[:len(curline):len(curline)]
-				return parseRec(')', prefix)
-
-			case ')', '}':
-				return errors.New("unexpected close delimiter")
-
-			default:
-				panic("bad token kind")
+		case '(':
+			list, err := parseParenList(lex)
+			if err != nil {
+				return Value{}, err
 			}
+			return Value{Head: head, List: list}, nil
+
+		case ')':
+			return Value{}, errors.New("unexpected close paren")
+
+		case tokErr:
+			return Value{}, tok.err
+
+		default:
+			panic("bad token kind")
 		}
 	}
-
-	if err := parseRec(tokEOF, nil); err != nil {
-		return nil, err
-	}
-	return lines, nil
 }
 
-func parseWord(s string) any {
-	if s == "true" {
-		return true
+// Called just after '('. Ends at start of line.
+func parseParenList(lex *lexer) ([]Value, error) {
+	// Next token must be newline.
+	tok := lex.next()
+	if tok.kind != '\n' {
+		return nil, cmp.Or(tok.err, errors.New("open paren must be followed by newline"))
 	}
-	if s == "false" {
-		return false
+
+	var vs []Value
+	for lex.peek() != ')' {
+		v, err := parseValue(lex)
+		if err != nil {
+			return nil, err
+		}
+		vs = append(vs, v)
 	}
-	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
-		return i
+	// Consume close paren.
+	lex.next()
+	// Expect newline or EOF.
+	tok = lex.next()
+	if tok.kind != '\n' && tok.kind != tokEOF {
+		return nil, cmp.Or(tok.err, errors.New("close paren must be followed by newline or EOF"))
 	}
-	if f, err := strconv.ParseFloat(s, 64); err == nil {
-		return f
-	}
-	return s
+	return vs, nil
 }
+
+// func parseWord(s string) any {
+// 	if s == "true" {
+// 		return true
+// 	}
+// 	if s == "false" {
+// 		return false
+// 	}
+// 	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+// 		return i
+// 	}
+// 	if f, err := strconv.ParseFloat(s, 64); err == nil {
+// 		return f
+// 	}
+// 	return s
+// }
