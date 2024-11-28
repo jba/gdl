@@ -35,8 +35,23 @@ func TestParseValue(t *testing.T) {
 			[]string{"x"},
 			[]Value{{Head: []string{"a", "b"}}},
 		},
+		// {
+		// 	"x(a b\n)",
+		// 	[]string{"x"},
+		// 	[]Value{{Head: []string{"a", "b"}}},
+		// },
+		// {
+		// 	"x(a b )",
+		// 	[]string{"x"},
+		// 	[]Value{{Head: []string{"a", "b"}}},
+		// },
+		// {
+		// 	"x(a b)",
+		// 	[]string{"x"},
+		// 	[]Value{{Head: []string{"a", "b"}}},
+		// },
 		{
-			"\n\nx\n\n",
+			"x\n\n",
 			[]string{"x"},
 			nil,
 		},
@@ -55,9 +70,10 @@ func TestParseValue(t *testing.T) {
 		},
 	} {
 		lex := newLexer(tc.in)
-		got, err := parseValue(lex)
+		got, err := parseValue(lex.next(), lex)
 		if err != nil {
-			t.Fatalf("%s: %v", tc.in, err)
+			t.Errorf("%s: %v", tc.in, err)
+			continue
 		}
 		want := Value{Head: tc.wantHead, List: tc.wantList}
 		gf := format.Sprint(got)
@@ -79,7 +95,7 @@ func TestParseValueError(t *testing.T) {
 		{"x y )", "unexpected close paren"},
 	} {
 		lex := newLexer(tc.in)
-		_, err := parseValue(lex)
+		_, err := parseValue(lex.next(), lex)
 		if err == nil {
 			t.Fatalf("%s: no error", tc.in)
 		}

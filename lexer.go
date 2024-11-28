@@ -54,6 +54,14 @@ func (l *lexer) error(err error) token {
 	return l.errtok
 }
 
+// func (l *lexer) unget(tok token) {
+// 	if l.ungotten {
+// 		panic("unget twice")
+// 	}
+// 	l.untok = tok
+// 	l.ungotten = true
+// }
+
 func (l *lexer) peek() rune {
 	if !l.ungotten {
 		l.untok = l.next()

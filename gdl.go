@@ -30,9 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"iter"
 	"os"
-	"slices"
 	"strconv"
 )
 
@@ -60,52 +58,44 @@ func Parse(s string) ([]Value, error) {
 // parse parses s. The filename is only for display in errors.
 func parse(s, filename string) (_ []Value, err error) {
 	lex := newLexer(s)
-	iter, errf := values(lex)
-	vals := slices.Collect(iter)
-	if err := errf(); err != nil {
-		return nil, fmt.Errorf("%s:%d: %w", filename, lex.lineno, err)
-	}
-	return vals, nil
-}
-
-func values(lex *lexer) (iter.Seq[Value], func() error) {
-	var err error
-	iter := func(yield func(Value) bool) {
-		var v Value
-		v, err = parseValue(lex)
-		if err == io.EOF {
-			err = nil
-			return
-		}
-		if err != nil {
-			return
-		}
-		if !yield(v) {
-			return
+	var vals []Value
+	for {
+		tok := skipNewlines(lex)
+		switch tok.kind {
+		case tokEOF:
+			return vals, nil
+		case ')':
+			return nil, fmt.Errorf("%s:%d: unexpected close paren", filename, lex.lineno)
+		default:
+			val, err := parseValue(tok, lex)
+			if err != nil {
+				return nil, fmt.Errorf("%s:%d: %w", filename, lex.lineno, err)
+			}
+			vals = append(vals, val)
 		}
 	}
-	return iter, func() error { return err }
 }
 
 // Called at line start. Ends at the next line start.
-func parseValue(lex *lexer) (Value, error) {
+// Only called when there is a value.
+func parseValue(tok token, lex *lexer) (Value, error) {
 	var head []string
 	for {
-		tok := lex.next()
 		switch tok.kind {
 		case tokEOF:
 			// Accept a value that isn't followed by a newline.
 			if len(head) > 0 {
 				return Value{Head: head}, nil
 			}
-			return Value{}, io.EOF
+			return Value{}, io.ErrUnexpectedEOF
 
 		case '\n':
 			if len(head) > 0 {
 				return Value{Head: head}, nil
 			}
-			// blank line
-			continue
+			return Value{}, errors.New("unexpected newline")
+			// // blank line
+			// continue
 
 		case tokWord:
 			head = append(head, tok.val)
@@ -133,6 +123,7 @@ func parseValue(lex *lexer) (Value, error) {
 		default:
 			panic("bad token kind")
 		}
+		tok = lex.next()
 	}
 }
 
@@ -145,21 +136,33 @@ func parseParenList(lex *lexer) ([]Value, error) {
 	}
 
 	var vs []Value
-	for lex.peek() != ')' {
-		v, err := parseValue(lex)
+	for {
+		tok := skipNewlines(lex)
+		switch tok.kind {
+		case tokEOF:
+			return nil, io.ErrUnexpectedEOF
+		case ')':
+			// Expect newline or EOF.
+			if tok := lex.next(); tok.kind != '\n' && tok.kind != tokEOF {
+				return nil, cmp.Or(tok.err, errors.New("close paren must be followed by newline or EOF"))
+			}
+			return vs, nil
+		}
+		v, err := parseValue(tok, lex)
 		if err != nil {
 			return nil, err
 		}
 		vs = append(vs, v)
 	}
-	// Consume close paren.
-	lex.next()
-	// Expect newline or EOF.
-	tok = lex.next()
-	if tok.kind != '\n' && tok.kind != tokEOF {
-		return nil, cmp.Or(tok.err, errors.New("close paren must be followed by newline or EOF"))
+}
+
+func skipNewlines(lex *lexer) token {
+	for {
+		tok := lex.next()
+		if tok.kind != '\n' {
+			return tok
+		}
 	}
-	return vs, nil
 }
 
 // func parseWord(s string) any {
