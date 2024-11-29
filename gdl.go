@@ -4,6 +4,15 @@
 
 // TODO: allow open paren to be followed by a value (but not close, that would be confusing)
 
+// TODO: rules on reuse:
+// If you re-use a data structure for unmarshaling, beware:
+// - You may have a value set that does not appear in the second input; it will still be there.
+// - That goes for struct fields, array/slice elements, map items.
+// (Consider a "clear" mode that zeros these things and sets slice lengths; but
+// maybe it's not worth it.)
+// (It certainly doesn't make sense to do this for slices/arrays but not for struct fields; that
+// would just be inconsistent. All or nothing.)
+
 // gdl implements a decription language based on the file format of go.mod
 // and similar files.
 // The format is line-oriented.
@@ -31,7 +40,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"strconv"
+	"strings"
 )
 
 type Value struct {
@@ -163,18 +174,140 @@ func skipNewlines(lex *lexer) token {
 	}
 }
 
-// func parseWord(s string) any {
-// 	if s == "true" {
-// 		return true
-// 	}
-// 	if s == "false" {
-// 		return false
-// 	}
-// 	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
-// 		return i
-// 	}
-// 	if f, err := strconv.ParseFloat(s, 64); err == nil {
-// 		return f
-// 	}
-// 	return s
+// func UnmarshalValues(vals []Value, p any) error {
 // }
+
+func UnmarshalValue(v Value, p any) error {
+	return unmarshalReflectValue(v, reflect.ValueOf(p))
+}
+
+func unmarshalReflectValue(v Value, rv reflect.Value) (err error) {
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("gdl.UnmarshalValue into %s: %w", rv.Type(), err)
+		}
+	}()
+
+	switch rv.Kind() {
+
+	case reflect.Slice, reflect.Array:
+		// Can json.Unmarshal take a straight slice, or does it need ptr to slice?
+		// If head is empty, unmarshal each value into an element.
+		if len(v.Head) == 0 {
+			for i := 0; i < min(rv.Len(), len(v.List)); i++ {
+				if err := unmarshalReflectValue(v.List[i], rv.Index(i)); err != nil {
+					return err
+				}
+			}
+		} else if len(v.List) == 0 {
+			for i := 0; i < min(rv.Len(), len(v.Head)); i++ {
+				if err := unmarshalScalar(v.Head[i], rv.Index(i)); err != nil {
+					return err
+				}
+			}
+		} else {
+			return errors.New("cannot unmarshal into slice a value that has both a head and a list")
+		}
+		// Don't clear or set length unless we want to do it for everything, even struct fields.
+		return nil
+
+	case reflect.Map:
+		// Single head is key?
+		return errors.New("unimplemented")
+	case reflect.Pointer:
+		// Use reflect.New and recurse with that? Unless it's not nil.
+		return unmarshalReflectValue(v, rv.Elem())
+	case reflect.Interface:
+		// Like pointer?
+		return errors.New("unimplemented")
+	case reflect.Struct:
+		return unmarshalStruct(v, rv)
+	case reflect.Chan, reflect.Func, reflect.UnsafePointer:
+		return fmt.Errorf("cannot unmarshal into type %s", rv.Type())
+	default:
+		if len(v.Head) != 1 || len(v.List) != 0 {
+			return errors.New("scalar requires Value with only one Head element")
+		}
+		return unmarshalScalar(v.Head[0], rv)
+	}
+}
+
+func unmarshalStruct(v Value, rv reflect.Value) error {
+	// Values in list must have a at least one head, the field name.
+	// rt := rv.Type()
+	valuesByKey := map[string]Value{}
+	for _, lv := range v.List {
+		if len(lv.Head) == 0 {
+			return errors.New("field value has no head")
+		}
+		key := strings.ToLower(lv.Head[0])
+		if _, ok := valuesByKey[key]; ok {
+			return fmt.Errorf("duplicate struct field key: %q", key)
+		}
+		valuesByKey[key] = lv
+	}
+	for _, f := range reflect.VisibleFields(rv.Type()) {
+		fv, err := rv.FieldByIndexErr(f.Index)
+		if err != nil {
+			return err
+		}
+		name := f.Name
+		if tag := f.Tag.Get("gdl"); tag != "" {
+			name = tag
+		}
+		// An integer name is an index into Head.
+		if i, err := strconv.Atoi(name); err == nil {
+			if i <= 0 || i >= len(v.Head) {
+				return fmt.Errorf("field %s: index %d is out of range of value head", f.Name, i)
+			}
+			if err := unmarshalScalar(v.Head[i], fv); err != nil {
+				return err
+			}
+		} else {
+			// Non-integer name: find list value case-insensitively.
+			// If we can't find it, skip this field.
+			if lv, ok := valuesByKey[strings.ToLower(name)]; ok {
+				// Remove the key from the head.
+				lv.Head = lv.Head[1:]
+				if err := unmarshalReflectValue(lv, fv); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func unmarshalScalar(s string, rv reflect.Value) error {
+	switch rv.Kind() {
+	case reflect.String:
+		rv.SetString(s)
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		i, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			return err
+		}
+		rv.SetInt(i)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		u, err := strconv.ParseUint(s, 10, 64)
+		if err != nil {
+			return err
+		}
+		rv.SetUint(u)
+	case reflect.Float32, reflect.Float64:
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			return err
+		}
+		rv.SetFloat(f)
+	case reflect.Bool:
+		b, err := strconv.ParseBool(s)
+		if err != nil {
+			return err
+		}
+		rv.SetBool(b)
+	default:
+		return fmt.Errorf("cannot unmarshal into scalar type %s", rv.Type())
+	}
+	return nil
+}

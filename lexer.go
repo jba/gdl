@@ -2,6 +2,8 @@
 // Use of this source code is governed by a license
 // that can be found in the LICENSE file.
 
+// TODO: allow ';' to replace newline.
+
 // TODO: match the lexical properties of go.mod parsing.
 
 // TODO: record token position for gdlfmt.
@@ -11,6 +13,7 @@
 // TODO: any token starting with a digit should be interpreted as a number.
 // But what about '-'? We want to support -foo as a bareword without the
 // the problem that -12a is a bad number.
+// SOLUTION: treat everything as a string; Unmarshal does conversions.
 
 package gdl
 

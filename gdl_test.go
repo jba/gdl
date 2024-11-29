@@ -5,6 +5,7 @@
 package gdl
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -219,5 +220,52 @@ func TestParse(t *testing.T) {
 		if g, w := format.Sprint(got), format.Sprint(tc.want); g != w {
 			t.Errorf("%q:\ngot  %s\nwant %s", tc.in, g, w)
 		}
+	}
+}
+
+// TODO: support unmarshaling into any, as in the old parseWord.
+
+func TestUnmarshal(t *testing.T) {
+	type S1 struct {
+		Name   string
+		Points int `gdl:"score"`
+	}
+
+	for _, tc := range []struct {
+		name string
+		in   string
+		p    any
+		want any
+	}{
+		{"string", "x", "", "x"},
+		{"int", "-23", 0, -23},
+		{"float", "1.5", 0.0, 1.5},
+		{"bool", "true", false, true},
+		{"uint", "23", uint(0), 23},
+		// TODO: support hex and octal uint constants?
+		{"scalar struct", "(name Al\nscore 23)", S1{}, S1{Name: "Al", Points: 23}},
+		{"struct ignore field", "(name Pat\npts 18)", S1{}, S1{Name: "Pat"}},
+		{"scalar slice head", "1 2 3", make([]int, 3), []int{1, 2, 3}},
+		{"scalar array head", "1 2 3", [3]int{}, [...]int{1, 2, 3}},
+		{"scalar slice list", "(1\n 2\n 3)", make([]int, 3), []int{1, 2, 3}},
+		{"scalar array list", "(1\n 2\n 3)", [3]int{}, [...]int{1, 2, 3}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vals, err := Parse(tc.in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(vals) != 1 {
+				t.Fatal("need exactly one value")
+			}
+			p := reflect.New(reflect.TypeOf(tc.p))
+			p.Elem().Set(reflect.ValueOf(tc.p)) // for, e.g., preserving length of slices
+			if err := UnmarshalValue(vals[0], p.Interface()); err != nil {
+				t.Fatal(err)
+			}
+			if g, w := format.Sprint(p.Elem().Interface()), format.Sprint(tc.want); g != w {
+				t.Errorf("\ngot \n%s\nwant %s", g, w)
+			}
+		})
 	}
 }
