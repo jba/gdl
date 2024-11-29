@@ -2,8 +2,6 @@
 // Use of this source code is governed by a license
 // that can be found in the LICENSE file.
 
-// TODO: allow ';' to replace newline.
-
 // TODO: match the lexical properties of go.mod parsing.
 
 // TODO: record token position for gdlfmt.
@@ -88,7 +86,7 @@ func (l *lexer) next() token {
 
 loop:
 	for {
-		s = skipSpace(s)
+		s = skipHorizontalSpace(s)
 		if len(s) == 0 {
 			return token{kind: tokEOF}
 		}
@@ -97,8 +95,12 @@ loop:
 			l.lineno++
 		}
 		switch c {
-		case '\n', '(', ')', '{', '}':
+		case '\n', '(', ')', ';':
 			s = s[sz:]
+			// Semicolons look like newlines.
+			if c == ';' {
+				c = '\n'
+			}
 			return token{kind: c}
 
 		case '/':
@@ -121,7 +123,7 @@ loop:
 			return token{kind: tokWord, val: word}
 
 		case '\\':
-			s = skipSpace(s[1:])
+			s = skipHorizontalSpace(s[1:])
 			if len(s) == 0 {
 				return l.error(errors.New("backlash at EOF"))
 			}
@@ -179,21 +181,21 @@ loop:
 	}
 }
 
-// stop chars: any whitespace; parens; braces.
+// stop chars: any whitespace; parens; semicolon.
 func scanWord(s string) (string, string) {
 	for i, r := range s {
 		if unicode.IsSpace(r) {
 			return s[:i], s[i:]
 		}
 		switch r {
-		case '(', ')', '{', '}':
+		case '(', ')', ';':
 			return s[:i], s[i:]
 		}
 	}
 	return s, ""
 }
 
-func skipSpace(s string) string {
+func skipHorizontalSpace(s string) string {
 	for i, r := range s {
 		if r == '\n' || !unicode.IsSpace(r) {
 			return s[i:]

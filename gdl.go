@@ -87,7 +87,7 @@ func parse(s, filename string) (_ []Value, err error) {
 	}
 }
 
-// Called at line start. Ends at the next line start or
+// Called at line start. Ends at the next line start or EOF.
 // Only called when there is a value.
 func parseValue(tok token, lex *lexer) (Value, error) {
 	var head []string

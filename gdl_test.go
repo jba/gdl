@@ -132,10 +132,33 @@ func TestParse(t *testing.T) {
 			},
 		},
 		{
+			"a (;b c)",
+			[]Value{
+				{
+					Head: []string{"a"},
+					List: []Value{
+						{Head: []string{"b", "c"}},
+					},
+				},
+			},
+		},
+		{
 			`a (
 				b x
 				c y
 			)`,
+			[]Value{
+				{
+					Head: []string{"a"},
+					List: []Value{
+						{Head: []string{"b", "x"}},
+						{Head: []string{"c", "y"}},
+					},
+				},
+			},
+		},
+		{
+			`a (b x; c y)`,
 			[]Value{
 				{
 					Head: []string{"a"},
@@ -176,7 +199,30 @@ func TestParse(t *testing.T) {
 			},
 		},
 		{
+			"a b (;c;d;)",
+			[]Value{
+				{
+					Head: []string{"a", "b"},
+					List: []Value{
+						{Head: []string{"c"}},
+						{Head: []string{"d"}},
+					},
+				},
+			},
+		},
+		{
 			"(\na\nb\n)",
+			[]Value{
+				{
+					List: []Value{
+						{Head: []string{"a"}},
+						{Head: []string{"b"}},
+					},
+				},
+			},
+		},
+		{
+			"(;a;b;)",
 			[]Value{
 				{
 					List: []Value{
@@ -198,6 +244,22 @@ func TestParse(t *testing.T) {
 		},
 		{
 			"(a b)\nc(d)",
+			[]Value{
+				{
+					List: []Value{
+						{Head: []string{"a", "b"}},
+					},
+				},
+				{
+					Head: []string{"c"},
+					List: []Value{
+						{Head: []string{"d"}},
+					},
+				},
+			},
+		},
+		{
+			"(a b);c(d)",
 			[]Value{
 				{
 					List: []Value{
@@ -244,11 +306,11 @@ func TestUnmarshal(t *testing.T) {
 		{"uint", "23", uint(0), 23},
 		// TODO: support hex and octal uint constants?
 		{"scalar struct", "(name Al\nscore 23)", S1{}, S1{Name: "Al", Points: 23}},
-		{"struct ignore field", "(name Pat\npts 18)", S1{}, S1{Name: "Pat"}},
+		{"struct ignore field", "(name Pat; pts 18)", S1{}, S1{Name: "Pat"}},
 		{"scalar slice head", "1 2 3", make([]int, 3), []int{1, 2, 3}},
 		{"scalar array head", "1 2 3", [3]int{}, [...]int{1, 2, 3}},
-		{"scalar slice list", "(1\n 2\n 3)", make([]int, 3), []int{1, 2, 3}},
-		{"scalar array list", "(1\n 2\n 3)", [3]int{}, [...]int{1, 2, 3}},
+		{"scalar slice list", "(1; 2; 3)", make([]int, 3), []int{1, 2, 3}},
+		{"scalar array list", "(1; 2; 3)", [3]int{}, [...]int{1, 2, 3}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			vals, err := Parse(tc.in)

@@ -23,13 +23,14 @@ func TestLexerNext(t *testing.T) {
 		{"", nil},
 		{"(", []token{char('(')}},
 		{"\n", []token{char('\n')}},
+		{";", []token{char('\n')}},
 		{"foo", []token{word("foo")}},
 		{"foo bar baz", []token{word("foo"), word("bar"), word("baz")}},
 		{"foo(bar)", []token{word("foo"), char('('), word("bar"), char(')')}},
-		{"foo{bar)", []token{word("foo"), char('{'), word("bar"), char(')')}},
 		{"a\nb", []token{word("a"), char('\n'), word("b")}},
+		{"a;b", []token{word("a"), char('\n'), word("b")}},
 		{"a\n   \nb", []token{word("a"), char('\n'), char('\n'), word("b")}},
-		{"a\n   \nb", []token{word("a"), char('\n'), char('\n'), word("b")}},
+		{"a;   ;b", []token{word("a"), char('\n'), char('\n'), word("b")}},
 		// raw strings
 		{"`x`", []token{str("`x`")}},
 		{"`x` is raw", []token{str("`x`"), word("is"), word("raw")}},
@@ -67,7 +68,7 @@ func TestLexerNext(t *testing.T) {
 	}
 }
 
-func TestSkipSpace(t *testing.T) {
+func TestSkipHorizontalSpace(t *testing.T) {
 	for _, tc := range []struct {
 		in   string
 		want string
@@ -78,7 +79,7 @@ func TestSkipSpace(t *testing.T) {
 		{" \t\nfoo", "\nfoo"},
 		{" \t\n foo", "\n foo"},
 	} {
-		got := skipSpace(tc.in)
+		got := skipHorizontalSpace(tc.in)
 		if got != tc.want {
 			t.Errorf("%q: got %q, want %q", tc.in, got, tc.want)
 		}
@@ -94,7 +95,7 @@ func TestScanWord(t *testing.T) {
 		{"foo bar", "foo", " bar"},
 		{"/path/name x", "/path/name", " x"},
 		{"f(x)", "f", "(x)"},
-		{"a/%@{b}", "a/%@", "{b}"},
+		{"a/%@(b)", "a/%@", "(b)"},
 		{"w\ny", "w", "\ny"},
 	} {
 		gotWord, gotRest := scanWord(tc.in)
