@@ -2,7 +2,7 @@
 // Use of this source code is governed by a license
 // that can be found in the LICENSE file.
 
-// TODO: allow open paren to be followed by a value (but not close, that would be confusing)
+// TODO: support unmarshaling into any.
 
 // TODO: rules on reuse:
 // If you re-use a data structure for unmarshaling, beware:
@@ -35,7 +35,6 @@
 package gdl
 
 import (
-	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -151,11 +150,15 @@ func parseParenList(lex *lexer) ([]Value, error) {
 		case tokEOF:
 			return nil, io.ErrUnexpectedEOF
 		case ')':
-			// Expect newline or EOF.
-			if tok := lex.next(); tok.kind != '\n' && tok.kind != tokEOF {
-				return nil, cmp.Or(tok.err, errors.New("close paren must be followed by newline or EOF"))
+			k := lex.peek()
+			switch k {
+			case tokErr:
+				return nil, lex.next().err
+			case ')', '\n', tokEOF:
+				return vs, nil
+			default:
+				return nil, errors.New("close paren must be followed by newline, EOF or another close paren")
 			}
-			return vs, nil
 		}
 		v, err := parseValue(tok, lex)
 		if err != nil {
@@ -191,31 +194,30 @@ func unmarshalReflectValue(v Value, rv reflect.Value) (err error) {
 	switch rv.Kind() {
 
 	case reflect.Slice, reflect.Array:
-		// Can json.Unmarshal take a straight slice, or does it need ptr to slice?
+		// Don't clear or set length unless we want to do it for everything, even struct fields.
+		// Unmarshal either the head or the list. The other must be empty.
+		// TODO: Can json.Unmarshal take a straight slice, or does it need ptr to slice?
 		// If head is empty, unmarshal each value into an element.
 		if len(v.Head) == 0 {
-			for i := 0; i < min(rv.Len(), len(v.List)); i++ {
-				if err := unmarshalReflectValue(v.List[i], rv.Index(i)); err != nil {
-					return err
-				}
-			}
-		} else if len(v.List) == 0 {
-			for i := 0; i < min(rv.Len(), len(v.Head)); i++ {
-				if err := unmarshalScalar(v.Head[i], rv.Index(i)); err != nil {
-					return err
-				}
-			}
-		} else {
-			return errors.New("cannot unmarshal into slice a value that has both a head and a list")
+			return unmarshalSliceOrArray(v.List, rv)
 		}
-		// Don't clear or set length unless we want to do it for everything, even struct fields.
-		return nil
+		if len(v.List) == 0 {
+			// TODO: optimize.
+			var vs []Value
+			for _, h := range v.Head {
+				vs = append(vs, Value{Head: []string{h}})
+			}
+			return unmarshalSliceOrArray(vs, rv)
+		}
+		return errors.New("cannot unmarshal a value that has both a head and a list into a slice or array")
 
 	case reflect.Map:
-		// Single head is key?
-		return errors.New("unimplemented")
+		return unmarshalMap(v, rv)
+
 	case reflect.Pointer:
-		// Use reflect.New and recurse with that? Unless it's not nil.
+		if rv.IsNil() {
+			rv.Set(reflect.New(rv.Type().Elem()))
+		}
 		return unmarshalReflectValue(v, rv.Elem())
 	case reflect.Interface:
 		// Like pointer?
@@ -230,6 +232,49 @@ func unmarshalReflectValue(v Value, rv reflect.Value) (err error) {
 		}
 		return unmarshalScalar(v.Head[0], rv)
 	}
+}
+
+func unmarshalSliceOrArray(vs []Value, rv reflect.Value) error {
+	if len(vs) > rv.Len() {
+		if rv.Kind() == reflect.Array {
+			return fmt.Errorf("array too short: need %d, have %d", len(vs), rv.Len())
+		}
+		// Extend slice.
+		for range len(vs) - rv.Len() {
+			rv.Set(reflect.Append(rv, reflect.Zero(rv.Type().Elem())))
+		}
+	}
+	for i, v := range vs {
+		if err := unmarshalReflectValue(v, rv.Index(i)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func unmarshalMap(v Value, rv reflect.Value) error {
+	// Expect a value with an empty head and a list of values v where
+	// each v has at least one head element, the key.
+	if t := rv.Type().Key(); t.Kind() != reflect.String {
+		return fmt.Errorf("map key underlying type must be string; have %s", t)
+	}
+	if len(v.Head) > 0 {
+		return fmt.Errorf("Value for map needs empty head; have %q", v.Head)
+	}
+	if rv.IsNil() {
+		rv.Set(reflect.MakeMap(rv.Type()))
+	}
+	for _, v := range v.List {
+		if len(v.Head) == 0 {
+			return errors.New("Value for map item needs at least one head element; have none")
+		}
+		elem := reflect.New(rv.Type().Elem())
+		if err := unmarshalReflectValue(headRest(v), elem); err != nil {
+			return err
+		}
+		rv.SetMapIndex(reflect.ValueOf(v.Head[0]), elem.Elem())
+	}
+	return nil
 }
 
 func unmarshalStruct(v Value, rv reflect.Value) error {
@@ -267,9 +312,7 @@ func unmarshalStruct(v Value, rv reflect.Value) error {
 			// Non-integer name: find list value case-insensitively.
 			// If we can't find it, skip this field.
 			if lv, ok := valuesByKey[strings.ToLower(name)]; ok {
-				// Remove the key from the head.
-				lv.Head = lv.Head[1:]
-				if err := unmarshalReflectValue(lv, fv); err != nil {
+				if err := unmarshalReflectValue(headRest(lv), fv); err != nil {
 					return err
 				}
 			}
@@ -310,4 +353,11 @@ func unmarshalScalar(s string, rv reflect.Value) error {
 		return fmt.Errorf("cannot unmarshal into scalar type %s", rv.Type())
 	}
 	return nil
+}
+
+// headRest returns a Value that is v with the first Head removed.
+// It panics if v has no head.
+func headRest(v Value) Value {
+	v.Head = v.Head[1:]
+	return v
 }

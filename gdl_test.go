@@ -285,12 +285,12 @@ func TestParse(t *testing.T) {
 	}
 }
 
-// TODO: support unmarshaling into any, as in the old parseWord.
-
 func TestUnmarshal(t *testing.T) {
 	type S1 struct {
 		Name   string
 		Points int `gdl:"score"`
+		Items  []string
+		Intp   *int
 	}
 
 	for _, tc := range []struct {
@@ -305,12 +305,42 @@ func TestUnmarshal(t *testing.T) {
 		{"bool", "true", false, true},
 		{"uint", "23", uint(0), 23},
 		// TODO: support hex and octal uint constants?
-		{"scalar struct", "(name Al\nscore 23)", S1{}, S1{Name: "Al", Points: 23}},
-		{"struct ignore field", "(name Pat; pts 18)", S1{}, S1{Name: "Pat"}},
 		{"scalar slice head", "1 2 3", make([]int, 3), []int{1, 2, 3}},
 		{"scalar array head", "1 2 3", [3]int{}, [...]int{1, 2, 3}},
 		{"scalar slice list", "(1; 2; 3)", make([]int, 3), []int{1, 2, 3}},
 		{"scalar array list", "(1; 2; 3)", [3]int{}, [...]int{1, 2, 3}},
+		{"struct", "(name Al; score 23)", S1{}, S1{Name: "Al", Points: 23}},
+		{"struct ignore field", "(name Pat; pts 18)", S1{}, S1{Name: "Pat"}},
+		{
+			"struct append",
+			"(name Al; score 23; items x y z)",
+			S1{},
+			S1{Name: "Al", Points: 23, Items: []string{"x", "y", "z"}},
+		},
+		{
+			"pointer",
+			"(name Andy; intp 3)",
+			func() S1 { i := 1; return S1{Name: "Fred", Intp: &i} }(),
+			func() S1 { i := 3; return S1{Name: "Andy", Intp: &i} }(),
+		},
+		{
+			"new pointer",
+			"(name Andy; intp 3)",
+			S1{},
+			func() S1 {
+				i := 3
+				return S1{Name: "Andy", Intp: &i}
+			}(),
+		},
+		{"map", "(a 1; b 2)", map[string]int{}, map[string]int{"a": 1, "b": 2}},
+		{"new map", "(a 1; b 2)", map[string]int(nil), map[string]int{"a": 1, "b": 2}},
+		{
+			"recursive",
+			`((name Al);
+				(name Pat))`,
+			[]S1(nil),
+			[]S1{{Name: "Al"}, {Name: "Pat"}},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			vals, err := Parse(tc.in)
