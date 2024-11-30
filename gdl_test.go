@@ -6,6 +6,7 @@ package gdl
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -106,10 +107,37 @@ func TestParseValueError(t *testing.T) {
 
 func TestParse(t *testing.T) {
 	for _, tc := range []struct {
+		in      string
+		want    Value
+		wantErr string
+	}{
+		{in: "1", want: Value{Head: []string{"1"}}},
+		{in: "a(b c)", want: Value{Head: []string{"a"}, List: []Value{{Head: []string{"b", "c"}}}}},
+		{in: "()", want: Value{}},
+		{in: "", wantErr: "no value"},
+		{in: "1;2", wantErr: "more than one value"},
+	} {
+		got, err := Parse(tc.in)
+		if err != nil {
+			if tc.wantErr == "" {
+				t.Errorf("%q: got error %q, want none", tc.in, err)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("%q: got error %q, should contain %q", tc.in, err, tc.wantErr)
+			}
+			continue
+		}
+		if g, w := format.Sprint(got), format.Sprint(tc.want); g != w {
+			t.Errorf("%q:\ngot  %s\nwant %s", tc.in, g, w)
+		}
+	}
+}
+
+func TestValues(t *testing.T) {
+	for _, tc := range []struct {
 		in   string
 		want []Value
 	}{
-		{"", nil},
 		{"x", []Value{{Head: []string{"x"}}}},
 		{"x yz", []Value{{Head: []string{"x", "yz"}}}},
 		{"x 2.5 3 true", []Value{{Head: []string{"x", "2.5", "3", "true"}}}},
@@ -275,8 +303,9 @@ func TestParse(t *testing.T) {
 			},
 		},
 	} {
-		got, err := Parse(tc.in)
-		if err != nil {
+		iter, errf := Values(tc.in)
+		got := slices.Collect(iter)
+		if err := errf(); err != nil {
 			t.Fatalf("%q: %v", tc.in, err)
 		}
 		if g, w := format.Sprint(got), format.Sprint(tc.want); g != w {
@@ -343,16 +372,13 @@ func TestUnmarshal(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			vals, err := Parse(tc.in)
+			val, err := Parse(tc.in)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(vals) != 1 {
-				t.Fatal("need exactly one value")
-			}
 			p := reflect.New(reflect.TypeOf(tc.p))
 			p.Elem().Set(reflect.ValueOf(tc.p)) // for, e.g., preserving length of slices
-			if err := UnmarshalValue(vals[0], p.Interface()); err != nil {
+			if err := UnmarshalValue(val, p.Interface()); err != nil {
 				t.Fatal(err)
 			}
 			if g, w := format.Sprint(p.Elem().Interface()), format.Sprint(tc.want); g != w {

@@ -27,17 +27,14 @@
 
 // An open parenthesis at the end of a line starts a sequence, which ends on a line
 // consisting only of a close parenthesis.
-
-// A word that looks like an integer is converted to an int64.
-// A word that looks like a float-point number is converted to a float64.
-// The words true and false are converted to bools.
-// No other processing is done to a word.
 package gdl
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"os"
 	"reflect"
 	"strconv"
@@ -49,41 +46,67 @@ type Value struct {
 	List []Value
 }
 
-// ParseFile calls [Parse] on the contents of the file.
-// The file is an implicit list of values.
-func ParseFile(filename string) ([]Value, error) {
+// ParseFile returns a sequence of Values parsed from the contents of the file.
+// If there is an error, the sequence stops and the error function will return the error.
+func FileValues(filename string) (iter.Seq[Value], func() error) {
 	data, err := os.ReadFile(filename)
 	if err != nil {
-		return nil, err
+		return func(func(Value) bool) { return }, func() error { return err }
 	}
 	return parse(string(data), filename)
 }
 
-// Parse parses the string and returns a slice of [Value]s.
-// Each element of a line slice is either a string, int64, float64 or bool.
-func Parse(s string) ([]Value, error) {
+// Values returns a sequence of Values parsed from s.
+// If there is an error, the sequence stops and the error function will return the error.
+func Values(s string) (iter.Seq[Value], func() error) {
 	return parse(s, "<no file>")
 }
 
-// parse parses s. The filename is only for display in errors.
-func parse(s, filename string) (_ []Value, err error) {
-	lex := newLexer(s)
-	var vals []Value
-	for {
-		tok := skipNewlines(lex)
-		switch tok.kind {
-		case tokEOF:
-			return vals, nil
-		case ')':
-			return nil, fmt.Errorf("%s:%d: unexpected close paren", filename, lex.lineno)
-		default:
-			val, err := parseValue(tok, lex)
-			if err != nil {
-				return nil, fmt.Errorf("%s:%d: %w", filename, lex.lineno, err)
+// Parse parses a single Value from s.
+// It returns an error if the string contains no Value, or more than one Value.
+func Parse(s string) (Value, error) {
+	vals, errf := parse(s, "<no file>")
+	next, stop := iter.Pull(vals)
+	defer stop()
+	val, ok := next()
+	if !ok {
+		return Value{}, cmp.Or(errf(), fmt.Errorf("gdl.Parse: no value in %q", s))
+	}
+	if _, ok = next(); ok {
+		return Value{}, fmt.Errorf("gdl.Parse: more than one value in %q", s)
+	}
+	if err := errf(); err != nil {
+		return Value{}, err
+	}
+	return val, nil
+}
+
+// parse parses s into a sequence of Values. The filename is only for display in errors.
+func parse(s, filename string) (iter.Seq[Value], func() error) {
+	var err error
+	iter := func(yield func(Value) bool) {
+		lex := newLexer(s)
+		for {
+			tok := skipNewlines(lex)
+			switch tok.kind {
+			case tokEOF:
+				return
+			case ')':
+				err = fmt.Errorf("%s:%d: unexpected close paren", filename, lex.lineno)
+				return
+			default:
+				val, e := parseValue(tok, lex)
+				if e != nil {
+					e = fmt.Errorf("%s:%d: %w", filename, lex.lineno, e)
+					return
+				}
+				if !yield(val) {
+					return
+				}
 			}
-			vals = append(vals, val)
 		}
 	}
+	return iter, func() error { return err }
 }
 
 // Called at line start. Ends at the next line start or EOF.
