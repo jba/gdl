@@ -285,6 +285,11 @@ func TestUnmarshalValue(t *testing.T) {
 		Intp   *int
 	}
 
+	type enum struct {
+		Name   string   `gdl:"1"`
+		Values []string `gdl:"*"`
+	}
+
 	for _, tc := range []struct {
 		name string
 		in   string
@@ -332,6 +337,12 @@ func TestUnmarshalValue(t *testing.T) {
 				{name Pat}}`,
 			[]S1(nil),
 			[]S1{{Name: "Al"}, {Name: "Pat"}},
+		},
+		{
+			"star",
+			"enum E {a;b;c}",
+			enum{},
+			enum{Name: "E", Values: []string{"a", "b", "c"}},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -4,6 +4,8 @@
 
 // TODO: support unmarshaling into any.
 
+// TODO: support a struct tag like "2-" to mean from arg 2 to the end.
+
 // TODO: rules on reuse:
 // If you re-use a data structure for unmarshaling, beware:
 // - You may have a value set that does not appear in the second input; it will still be there.
@@ -13,20 +15,76 @@
 // (It certainly doesn't make sense to do this for slices/arrays but not for struct fields; that
 // would just be inconsistent. All or nothing.)
 
-// gdl implements a decription language based on the file format of go.mod
+// gdl implements a decription language inspired by the file format of go.mod
 // and similar files.
-// The format is line-oriented.
+//
+// # Lexical structure
+//
+// A gdl string is a sequence of words, separators and delimiters.
+// The delimiters are parentheses and braces.
+// The separators are newline and semicolon.
 // If the last non-whitespace character on a line is a backslash, the line continues
 // onto the next line.
+//
+// A word is a sequence of non-space characters ending in a delimiter or separator.
+// Words can be double-quoted or backquoted as in Go, with the same syntax.
 // Comments begin with // and extend to the end of the line.
 // Backslashes are ignored inside a comment.
 //
-// Each line is a sequence of words separated by whitespace.
-// A word can include whitespace by enclosing it in double quotes or backticks.
-// Both kinds of quotations are interpreted according to Go syntax.
-
-// An open parenthesis at the end of a line starts a sequence, which ends on a line
-// consisting only of a close parenthesis.
+// # Values
+//
+// A [Value] has two parts: a head and a list.
+// The head is a sequence of words. For example,
+//
+//	name Al Jones
+//
+// is a Value whose head has three words and whose list is empty.
+// A list is a sequence of Values, delimited by braces.
+// This is a list with three Values, each of which has a single head word
+// and no list:
+//
+//	{ one; two; three }
+//
+// Here is a Value with both a head and a list:
+//
+//	command create {
+//	    description "create a shape"
+//	    args size position
+//	}
+//
+// The head of this Value has the two words "command" and "create".
+// The list consists of two Values, one on each line.
+//
+// A sequence of values surrounded by parentheses repeats those values using the head as a prefix.
+// For example,
+//
+//	  require (
+//	      example.com/a v1.2.3
+//	      example.com/b v0.2.5
+//	  )
+//
+//	is equivalent to the two values
+//
+//	  require example.com/a v1.2.3
+//	  require example.com/b v0.2.5
+//
+// Use the [Values] and [FileValues] functions to parse a sequence of values from a string or file, respectively.
+//
+// # Unmarshaling
+//
+// A Value can be unmarshaled into a struct or other Go type. A Value with no list
+// and a one-element head can be unmarshaled into a Go scalar like a string or int.
+// For example, the value
+//
+//	1
+//
+// can be unmarshaled into a string, int or float.
+//
+// A value with multiple head words, or with a list, can be unmarshaled into a slice or array.
+// More complicated values can be unmarshaled into a map or struct.
+// See [UnmarshalValue] for details.
+//
+// A sequence of Values, such as an entire file, can be unmarshaled into a struct with [UnmarshalValues].
 package gdl
 
 import (
@@ -234,7 +292,7 @@ func skipNewlines(lex *lexer) token {
 	}
 }
 
-// Unmarshal values takes a sequence of Values and unmarshals them into p.
+// UnmarshalValues takes a sequence of Values and unmarshals them into p.
 // p must be a pointer to a struct.
 // Each Value in the sequence must have a non-empty head. The first head value
 // must match a field in the struct.
@@ -315,6 +373,23 @@ func matchField(s string, fields []reflect.StructField) (reflect.StructField, bo
 	return reflect.StructField{}, false
 }
 
+// UnmarshalValue unmarshals a [Value] into a Go value.
+// The second argument must be a pointer.
+//
+// If p points to a string, int, uint, float or bool, v must have no list and one head word.
+// It is converted using the [strconv] package.
+//
+// If p points to a slice or array, v must have no list, or no head.
+// The non-empty part is assigned to the slice or array element by element.
+// Slices are appended to as needed.
+//
+// If p points to a map, the map key type must be a string, and v cannot have a head.
+// Each Value in v's list must have at least one head word.
+// That word is the map key, and the rest of the Value is unmarshaled into a new Go value
+// of the map's value type.
+// For example, TODO.
+//
+// TODO: struct
 func UnmarshalValue(v Value, p any) (err error) {
 	defer func() {
 		if err != nil {
@@ -414,7 +489,6 @@ func unmarshalMap(v Value, rv reflect.Value) error {
 }
 
 func unmarshalStruct(v Value, rv reflect.Value) error {
-	// Values in v.List must have a at least one head, the field name.
 	valuesByKey := map[string]Value{}
 	for _, lv := range v.List {
 		if len(lv.Head) == 0 {
@@ -426,6 +500,8 @@ func unmarshalStruct(v Value, rv reflect.Value) error {
 		}
 		valuesByKey[key] = lv
 	}
+	saw := map[any]bool{}
+	sawNonStarString := false
 	for _, f := range reflect.VisibleFields(rv.Type()) {
 		// TODO: create the nil pointers that would cause FieldByIndexErr to return an error.
 		fv, err := rv.FieldByIndexErr(f.Index)
@@ -436,17 +512,38 @@ func unmarshalStruct(v Value, rv reflect.Value) error {
 		if tag := f.Tag.Get("gdl"); tag != "" {
 			name = tag
 		}
-		// An integer name is an index into Head.
-		if i, err := strconv.Atoi(name); err == nil {
+		// The name "*" means use the entire list, without field prefixes.
+		// The field must be a slice or array.
+		if name == "*" {
+			if saw["*"] || sawNonStarString {
+				return fmt.Errorf("field %s: saw '*' and field name or other '*' in same struct", f.Name)
+			}
+			saw["*"] = true
+			v2 := v
+			v2.Head = nil
+			if err := unmarshalReflectValue(v2, fv); err != nil {
+				return err
+			}
+		} else if i, err := strconv.Atoi(name); err == nil {
+			// An integer name is an index into Head.
 			if i <= 0 || i >= len(v.Head) {
 				return fmt.Errorf("field %s: index %d is out of range of value head", f.Name, i)
 			}
+			if saw[i] {
+				return fmt.Errorf("field %s: duplicate index %d", f.Name, i)
+			}
+			saw[i] = true
 			if err := unmarshalScalar(v.Head[i], fv); err != nil {
 				return err
 			}
 		} else {
 			// Non-integer name: find list value case-insensitively.
 			// If we can't find it, skip this field.
+			if saw[name] || saw["*"] {
+				return fmt.Errorf("field %s: duplicate name %q or saw '*'", f.Name, name)
+			}
+			saw[name] = true
+			sawNonStarString = true
 			if lv, ok := valuesByKey[strings.ToLower(name)]; ok {
 				if err := unmarshalReflectValue(headRest(lv), fv); err != nil {
 					return err
