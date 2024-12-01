@@ -44,6 +44,7 @@ func TestLexerNext(t *testing.T) {
 		// comments
 		{"\n// a comment\na b // more", []token{char('\n'), char('\n'), word("a"), word("b")}},
 		{"a(//comment\n)", []token{word("a"), char('('), char('\n'), char(')')}},
+		{"a{//comment\n}", []token{word("a"), char('{'), char('\n'), char('}')}},
 		{" not//a comment", []token{word("not//a"), word("comment")}},
 		// continuations
 		{"a b\\c", []token{word("a"), word("b\\c")}},

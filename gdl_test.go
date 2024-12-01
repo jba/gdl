@@ -7,7 +7,6 @@ package gdl
 import (
 	"path"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 
@@ -15,21 +14,29 @@ import (
 	"rsc.io/diff"
 )
 
-// TODO: test errors
+// TODO: test more errors
+// TODO: ~100% test coverage
+// TODO: simplify tests by testing that whitespace is ignored after an open delimiter.
+//       (Maybe redo the lexer so it really is ignored.)
 
 var vfmt = format.New().IgnoreFields(Value{}, "File", "Line")
 
-func TestParseValue(t *testing.T) {
+func TestParseValues(t *testing.T) {
 	for _, tc := range []struct {
-		in       string
-		wantHead []string
-		wantList []Value
+		in   string
+		want []Value
 	}{
-		{"x", []string{"x"}, nil},
-		{"x y", []string{"x", "y"}, nil},
+		{"x", []Value{{Head: []string{"x"}}}},
+		{"x y", []Value{{Head: []string{"x", "y"}}}},
 		{
 			"(\nx\ny\n)",
-			nil,
+			[]Value{
+				{Head: []string{"x"}},
+				{Head: []string{"y"}},
+			},
+		},
+		{
+			"(\n\nx\n\ny\n\n)",
 			[]Value{
 				{Head: []string{"x"}},
 				{Head: []string{"y"}},
@@ -37,52 +44,41 @@ func TestParseValue(t *testing.T) {
 		},
 		{
 			"x(\n a b\n)",
-			[]string{"x"},
-			[]Value{{Head: []string{"a", "b"}}},
+			[]Value{{Head: []string{"x", "a", "b"}}},
 		},
 		{
 			"x(a b\n)",
-			[]string{"x"},
-			[]Value{{Head: []string{"a", "b"}}},
+			[]Value{{Head: []string{"x", "a", "b"}}},
 		},
 		{
 			"x(a b )",
-			[]string{"x"},
-			[]Value{{Head: []string{"a", "b"}}},
+			[]Value{{Head: []string{"x", "a", "b"}}},
 		},
 		{
 			"x(a b)",
-			[]string{"x"},
-			[]Value{{Head: []string{"a", "b"}}},
+			[]Value{{Head: []string{"x", "a", "b"}}},
 		},
 		{
 			"x\n\n",
-			[]string{"x"},
-			nil,
+			[]Value{{Head: []string{"x"}}},
 		},
 		{
-			"(\n\nx\n\ny\n\n)",
-			nil,
-			[]Value{{Head: []string{"x"}}, {Head: []string{"y"}}},
-		},
-		{
-			"command foo 1.5 (\nargs a b\nflag foo -n `do nothing`\n)",
-			[]string{"command", "foo", "1.5"},
+			"h1 h2 (args a b; f(c; d))",
 			[]Value{
-				{Head: []string{"args", "a", "b"}},
-				{Head: []string{"flag", "foo", "-n", "do nothing"}},
+				{Head: []string{"h1", "h2", "args", "a", "b"}},
+				{Head: []string{"h1", "h2", "f", "c"}},
+				{Head: []string{"h1", "h2", "f", "d"}},
 			},
 		},
 	} {
 		lex := newLexer(tc.in, "tc")
-		got, err := parseValue(lex.next(), lex)
+		got, err := parseValues(lex.next(), lex)
 		if err != nil {
 			t.Errorf("%s: %v", tc.in, err)
 			continue
 		}
-		want := Value{Head: tc.wantHead, List: tc.wantList}
 		gf := vfmt.Sprint(got)
-		wf := vfmt.Sprint(want)
+		wf := vfmt.Sprint(tc.want)
 		if gf != wf {
 			t.Errorf("%s: mismatch (-want, +got):\n%s", tc.in, diff.Format(gf, wf))
 		}
@@ -95,10 +91,11 @@ func TestParseValueError(t *testing.T) {
 		want string
 	}{
 		{"", "EOF"},
-		{"(\n) x", "close paren must be followed"},
+		{"(\n) x", "close * must be followed"},
+		{"(\n} x", "mismatch"},
 	} {
 		lex := newLexer(tc.in, "tc")
-		_, err := parseValue(lex.next(), lex)
+		_, err := parseValues(lex.next(), lex)
 		matchError(t, tc.in, err, tc.want)
 	}
 }
@@ -106,14 +103,167 @@ func TestParseValueError(t *testing.T) {
 func TestParse(t *testing.T) {
 	for _, tc := range []struct {
 		in      string
-		want    Value
+		want    []Value
 		wantErr string
 	}{
-		{in: "1", want: Value{Head: []string{"1"}}},
-		{in: "a(b c)", want: Value{Head: []string{"a"}, List: []Value{{Head: []string{"b", "c"}}}}},
-		{in: "()", want: Value{}},
-		{in: "", wantErr: "no value"},
-		{in: "1;2", wantErr: "more than one value"},
+		{in: "1", want: []Value{{Head: []string{"1"}}}},
+		{in: "a(b c)", want: []Value{{Head: []string{"a", "b", "c"}}}},
+		{in: "()", want: nil},
+		{in: "", want: nil},
+		{in: "1;2", want: []Value{{Head: []string{"1"}}, {Head: []string{"2"}}}},
+		{
+			in: "a (;b c)",
+			want: []Value{
+				{Head: []string{"a", "b", "c"}},
+			},
+		},
+		{
+			in: `a {
+				b x
+				c y
+			}`,
+			want: []Value{
+				{
+					Head: []string{"a"},
+					List: []Value{
+						{Head: []string{"b", "x"}},
+						{Head: []string{"c", "y"}},
+					},
+				},
+			},
+		},
+		{
+			in: `a (
+				b x
+				c y
+			)`,
+			want: []Value{
+				{Head: []string{"a", "b", "x"}},
+				{Head: []string{"a", "c", "y"}},
+			},
+		},
+		{
+			in: `a {b x; c y}`,
+			want: []Value{
+				{
+					Head: []string{"a"},
+					List: []Value{
+						{Head: []string{"b", "x"}},
+						{Head: []string{"c", "y"}},
+					},
+				},
+			},
+		},
+		{
+			in: `a (b x; c y)`,
+			want: []Value{
+				{Head: []string{"a", "b", "x"}},
+				{Head: []string{"a", "c", "y"}},
+			},
+		},
+		{
+			in: `a {
+				b x
+
+				// second
+				c y
+			}`,
+			want: []Value{
+				{
+					Head: []string{"a"},
+					List: []Value{
+						{Head: []string{"b", "x"}},
+						{Head: []string{"c", "y"}},
+					},
+				},
+			},
+		},
+		{
+			in: "a b {\nc\nd\n}",
+			want: []Value{
+				{
+					Head: []string{"a", "b"},
+					List: []Value{
+						{Head: []string{"c"}},
+						{Head: []string{"d"}},
+					},
+				},
+			},
+		},
+		{
+			in: "a b (\nc\nd\n)",
+			want: []Value{
+				{Head: []string{"a", "b", "c"}},
+				{Head: []string{"a", "b", "d"}},
+			},
+		},
+		{
+			in: "a b {;c;d;}",
+			want: []Value{
+				{
+					Head: []string{"a", "b"},
+					List: []Value{
+						{Head: []string{"c"}},
+						{Head: []string{"d"}},
+					},
+				},
+			},
+		},
+		{
+			in: "{\na\nb\n}",
+			want: []Value{
+				{
+					List: []Value{
+						{Head: []string{"a"}},
+						{Head: []string{"b"}},
+					},
+				},
+			},
+		},
+		{
+			in: "(\na\nb\n)",
+			want: []Value{
+				{Head: []string{"a"}},
+				{Head: []string{"b"}},
+			},
+		},
+		{
+			in: "{a b}",
+			want: []Value{
+				{
+					List: []Value{
+						{Head: []string{"a", "b"}},
+					},
+				},
+			},
+		},
+		{
+			in:   "(a b)",
+			want: []Value{{Head: []string{"a", "b"}}},
+		},
+		{
+			in: "{a b}\nc{d}",
+			want: []Value{
+				{
+					List: []Value{
+						{Head: []string{"a", "b"}},
+					},
+				},
+				{
+					Head: []string{"c"},
+					List: []Value{
+						{Head: []string{"d"}},
+					},
+				},
+			},
+		},
+		{
+			in: "(a b)\nc(d)",
+			want: []Value{
+				{Head: []string{"a", "b"}},
+				{Head: []string{"c", "d"}},
+			},
+		},
 	} {
 		got, err := Parse(tc.in)
 		if tc.wantErr != "" {
@@ -121,187 +271,6 @@ func TestParse(t *testing.T) {
 		} else if err != nil {
 			t.Errorf("%q: unexpected error %q", tc.in, err)
 		} else if g, w := vfmt.Sprint(got), vfmt.Sprint(tc.want); g != w {
-			t.Errorf("%q:\ngot  %s\nwant %s", tc.in, g, w)
-		}
-	}
-}
-
-func TestValues(t *testing.T) {
-	for _, tc := range []struct {
-		in   string
-		want []Value
-	}{
-		{"x", []Value{{Head: []string{"x"}}}},
-		{"x yz", []Value{{Head: []string{"x", "yz"}}}},
-		{"x 2.5 3 true", []Value{{Head: []string{"x", "2.5", "3", "true"}}}},
-		{
-			"// a file\nx 17 \"true\"\ny 22.5 \\\ntrue",
-			[]Value{
-				{Head: []string{"x", "17", "true"}},
-				{Head: []string{"y", "22.5", "true"}},
-			},
-		},
-		{
-			"a (\nb c)",
-			[]Value{
-				{
-					Head: []string{"a"},
-					List: []Value{
-						{Head: []string{"b", "c"}},
-					},
-				},
-			},
-		},
-		{
-			"a (;b c)",
-			[]Value{
-				{
-					Head: []string{"a"},
-					List: []Value{
-						{Head: []string{"b", "c"}},
-					},
-				},
-			},
-		},
-		{
-			`a (
-				b x
-				c y
-			)`,
-			[]Value{
-				{
-					Head: []string{"a"},
-					List: []Value{
-						{Head: []string{"b", "x"}},
-						{Head: []string{"c", "y"}},
-					},
-				},
-			},
-		},
-		{
-			`a (b x; c y)`,
-			[]Value{
-				{
-					Head: []string{"a"},
-					List: []Value{
-						{Head: []string{"b", "x"}},
-						{Head: []string{"c", "y"}},
-					},
-				},
-			},
-		},
-		{
-			`a (
-				b x
-
-				// second
-				c y
-			)`,
-			[]Value{
-				{
-					Head: []string{"a"},
-					List: []Value{
-						{Head: []string{"b", "x"}},
-						{Head: []string{"c", "y"}},
-					},
-				},
-			},
-		},
-		{
-			"a b (\nc\nd\n)",
-			[]Value{
-				{
-					Head: []string{"a", "b"},
-					List: []Value{
-						{Head: []string{"c"}},
-						{Head: []string{"d"}},
-					},
-				},
-			},
-		},
-		{
-			"a b (;c;d;)",
-			[]Value{
-				{
-					Head: []string{"a", "b"},
-					List: []Value{
-						{Head: []string{"c"}},
-						{Head: []string{"d"}},
-					},
-				},
-			},
-		},
-		{
-			"(\na\nb\n)",
-			[]Value{
-				{
-					List: []Value{
-						{Head: []string{"a"}},
-						{Head: []string{"b"}},
-					},
-				},
-			},
-		},
-		{
-			"(;a;b;)",
-			[]Value{
-				{
-					List: []Value{
-						{Head: []string{"a"}},
-						{Head: []string{"b"}},
-					},
-				},
-			},
-		},
-		{
-			"(a b)",
-			[]Value{
-				{
-					List: []Value{
-						{Head: []string{"a", "b"}},
-					},
-				},
-			},
-		},
-		{
-			"(a b)\nc(d)",
-			[]Value{
-				{
-					List: []Value{
-						{Head: []string{"a", "b"}},
-					},
-				},
-				{
-					Head: []string{"c"},
-					List: []Value{
-						{Head: []string{"d"}},
-					},
-				},
-			},
-		},
-		{
-			"(a b);c(d)",
-			[]Value{
-				{
-					List: []Value{
-						{Head: []string{"a", "b"}},
-					},
-				},
-				{
-					Head: []string{"c"},
-					List: []Value{
-						{Head: []string{"d"}},
-					},
-				},
-			},
-		},
-	} {
-		iter, errf := Values(tc.in)
-		got := slices.Collect(iter)
-		if err := errf(); err != nil {
-			t.Fatalf("%q: %v", tc.in, err)
-		}
-		if g, w := vfmt.Sprint(got), vfmt.Sprint(tc.want); g != w {
 			t.Errorf("%q:\ngot  %s\nwant %s", tc.in, g, w)
 		}
 	}
@@ -330,46 +299,50 @@ func TestUnmarshalValue(t *testing.T) {
 		// TODO: support hex and octal uint constants?
 		{"scalar slice head", "1 2 3", make([]int, 3), []int{1, 2, 3}},
 		{"scalar array head", "1 2 3", [3]int{}, [...]int{1, 2, 3}},
-		{"scalar slice list", "(1; 2; 3)", make([]int, 3), []int{1, 2, 3}},
-		{"scalar array list", "(1; 2; 3)", [3]int{}, [...]int{1, 2, 3}},
-		{"struct", "(name Al; score 23)", S1{}, S1{Name: "Al", Points: 23}},
-		{"struct ignore field", "(name Pat; pts 18)", S1{}, S1{Name: "Pat"}},
+		{"scalar slice list", "{1; 2; 3}", make([]int, 3), []int{1, 2, 3}},
+		{"scalar array list", "{1; 2; 3}", [3]int{}, [...]int{1, 2, 3}},
+		{"struct", "{name Al; score 23}", S1{}, S1{Name: "Al", Points: 23}},
+		{"struct ignore field", "{name Pat; pts 18}", S1{}, S1{Name: "Pat"}},
 		{
 			"struct append",
-			"(name Al; score 23; items x y z)",
+			"{name Al; score 23; items x y z}",
 			S1{},
 			S1{Name: "Al", Points: 23, Items: []string{"x", "y", "z"}},
 		},
 		{
 			"pointer",
-			"(name Andy; intp 3)",
+			"{name Andy; intp 3}",
 			func() S1 { i := 1; return S1{Name: "Fred", Intp: &i} }(),
 			func() S1 { i := 3; return S1{Name: "Andy", Intp: &i} }(),
 		},
 		{
 			"new pointer",
-			"(name Andy; intp 3)",
+			"{name Andy; intp 3}",
 			S1{},
 			func() S1 {
 				i := 3
 				return S1{Name: "Andy", Intp: &i}
 			}(),
 		},
-		{"map", "(a 1; b 2)", map[string]int{}, map[string]int{"a": 1, "b": 2}},
-		{"new map", "(a 1; b 2)", map[string]int(nil), map[string]int{"a": 1, "b": 2}},
+		{"map", "{a 1; b 2}", map[string]int{}, map[string]int{"a": 1, "b": 2}},
+		{"new map", "{a 1; b 2}", map[string]int(nil), map[string]int{"a": 1, "b": 2}},
 		{
 			"recursive",
-			`((name Al);
-				(name Pat))`,
+			`{{name Al};
+				{name Pat}}`,
 			[]S1(nil),
 			[]S1{{Name: "Al"}, {Name: "Pat"}},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			val, err := Parse(tc.in)
+			vals, err := Parse(tc.in)
 			if err != nil {
 				t.Fatal(err)
 			}
+			if len(vals) != 1 {
+				t.Fatal("need one value")
+			}
+			val := vals[0]
 			p := reflect.New(reflect.TypeOf(tc.p))
 			p.Elem().Set(reflect.ValueOf(tc.p)) // for, e.g., preserving length of slices
 			if err := UnmarshalValue(val, p.Interface()); err != nil {
@@ -387,15 +360,19 @@ func TestUnmarshalValueError(t *testing.T) {
 		p    any
 		want string
 	}{
-		{"a (b)", []string(nil), "both a head and a list"},
-		{"a (b)", map[string]string{}, "map*needs empty head"},
+		{"a {b}", []string(nil), "both a head and a list"},
+		{"a {b}", map[string]string{}, "map*needs empty head"},
 		{"x", make(chan int), "cannot unmarshal into"},
 		{"x y", 0, "scalar*one head"},
 	} {
-		val, err := Parse(tc.in)
+		vals, err := Parse(tc.in)
 		if err != nil {
 			t.Fatal(err)
 		}
+		if len(vals) != 1 {
+			t.Fatal("need one value")
+		}
+		val := vals[0]
 		p := reflect.New(reflect.TypeOf(tc.p))
 		p.Elem().Set(reflect.ValueOf(tc.p)) // for, e.g., preserving length of slices
 		matchError(t, tc.in, UnmarshalValue(val, p.Interface()), tc.want)
@@ -428,6 +405,14 @@ func TestUnmarshalValues(t *testing.T) {
 	}{
 		{
 			in: "name test; require m1 v1; require m2 v2; replace a -> b",
+			want: S{
+				Name:     Name{"test"},
+				Requires: []Require{{Mod: "m1", Version: "v1"}, {Mod: "m2", Version: "v2"}},
+				Replaces: []*Replace{{From: "a", Op: "->", To: "b"}},
+			},
+		},
+		{
+			in: "name test; require (m1 v1; m2 v2); replace a -> b",
 			want: S{
 				Name:     Name{"test"},
 				Requires: []Require{{Mod: "m1", Version: "v1"}, {Mod: "m2", Version: "v2"}},

@@ -30,13 +30,13 @@
 package gdl
 
 import (
-	"cmp"
 	"errors"
 	"fmt"
 	"io"
 	"iter"
 	"os"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -78,23 +78,14 @@ func Values(s string) (iter.Seq[Value], func() error) {
 	return parse(s, "<no file>")
 }
 
-// Parse parses a single Value from s.
-// It returns an error if the string contains no Value, or more than one Value.
-func Parse(s string) (Value, error) {
-	vals, errf := parse(s, "<no file>")
-	next, stop := iter.Pull(vals)
-	defer stop()
-	val, ok := next()
-	if !ok {
-		return Value{}, cmp.Or(errf(), fmt.Errorf("gdl.Parse: no value in %q", s))
-	}
-	if _, ok = next(); ok {
-		return Value{}, fmt.Errorf("gdl.Parse: more than one value in %q", s)
-	}
+// Parse returns a slice of the Values in s.
+func Parse(s string) ([]Value, error) {
+	iter, errf := Values(s)
+	vals := slices.Collect(iter)
 	if err := errf(); err != nil {
-		return Value{}, err
+		return nil, err
 	}
-	return val, nil
+	return vals, nil
 }
 
 // parse parses s into a sequence of Values. The filename is only for display in errors.
@@ -111,13 +102,15 @@ func parse(s, filename string) (iter.Seq[Value], func() error) {
 				err = fmt.Errorf("%s:%d: unexpected close paren", lex.filename, lex.lineno)
 				return
 			default:
-				val, e := parseValue(tok, lex)
+				vals, e := parseValues(tok, lex)
 				if e != nil {
 					e = fmt.Errorf("%s:%d: %w", lex.filename, lex.lineno, e)
 					return
 				}
-				if !yield(val) {
-					return
+				for _, v := range vals {
+					if !yield(v) {
+						return
+					}
 				}
 			}
 		}
@@ -136,22 +129,22 @@ func newValue(head []string, list []Value, lex *lexer) Value {
 
 // Called at line start. Ends at the next line start or EOF.
 // Only called when there is a value.
-func parseValue(tok token, lex *lexer) (Value, error) {
+func parseValues(tok token, lex *lexer) ([]Value, error) {
 	var head []string
 	for {
 		switch tok.kind {
 		case tokEOF:
 			// Accept a value that isn't followed by a newline.
 			if len(head) > 0 {
-				return newValue(head, nil, lex), nil
+				return []Value{newValue(head, nil, lex)}, nil
 			}
-			return Value{}, io.ErrUnexpectedEOF
+			return nil, io.ErrUnexpectedEOF
 
 		case '\n':
 			if len(head) > 0 {
-				return newValue(head, nil, lex), nil
+				return []Value{newValue(head, nil, lex)}, nil
 			}
-			return Value{}, errors.New("unexpected newline")
+			return nil, errors.New("unexpected newline")
 			// // blank line
 			// continue
 
@@ -161,26 +154,40 @@ func parseValue(tok token, lex *lexer) (Value, error) {
 		case tokString:
 			unq, err := strconv.Unquote(tok.val)
 			if err != nil {
-				return Value{}, err
+				return nil, err
 			}
 			head = append(head, unq)
 
 		case '(':
-			list, err := parseParenList(lex)
+			list, err := parseList(lex, ')')
 			if err != nil {
-				return Value{}, err
+				return nil, err
 			}
-			return newValue(head, list, lex), nil
+			var vals []Value
+			for _, lv := range list {
+				vals = append(vals, newValue(slices.Concat(head, lv.Head), lv.List, lex))
+			}
+			return vals, nil
 
-		case ')':
+		case ')', '}':
 			lex.unget(tok)
 			if len(head) == 0 {
-				panic("bad close paren")
+				panic("bad close delimiter")
 			}
-			return newValue(head, nil, lex), nil
+			// We're here after getting b in something like
+			//    (a; b)
+			// The close delim is part of the enclosing list.
+			return []Value{newValue(head, nil, lex)}, nil
+
+		case '{':
+			list, err := parseList(lex, '}')
+			if err != nil {
+				return nil, err
+			}
+			return []Value{newValue(head, list, lex)}, nil
 
 		case tokErr:
-			return Value{}, tok.err
+			return nil, tok.err
 
 		default:
 			panic("bad token kind")
@@ -189,30 +196,32 @@ func parseValue(tok token, lex *lexer) (Value, error) {
 	}
 }
 
-// Called just after '('. Ends at start of line.
-func parseParenList(lex *lexer) ([]Value, error) {
+// Called just after open delimiter. Ends just after close delimiter.
+func parseList(lex *lexer, close rune) ([]Value, error) {
 	var vs []Value
 	for {
 		tok := skipNewlines(lex)
 		switch tok.kind {
 		case tokEOF:
 			return nil, io.ErrUnexpectedEOF
-		case ')':
+		case close:
 			k := lex.peek()
 			switch k {
 			case tokErr:
 				return nil, lex.next().err
-			case ')', '\n', tokEOF:
+			case close, '\n', tokEOF:
 				return vs, nil
 			default:
-				return nil, errors.New("close paren must be followed by newline, EOF or another close paren")
+				return nil, errors.New("close delimiter must be followed by newline, EOF or another close delimiter")
 			}
+		case ')', '}':
+			return nil, errors.New("mismatched close delimiter")
 		}
-		v, err := parseValue(tok, lex)
+		vs1, err := parseValues(tok, lex)
 		if err != nil {
 			return nil, err
 		}
-		vs = append(vs, v)
+		vs = append(vs, vs1...)
 	}
 }
 
@@ -224,8 +233,6 @@ func skipNewlines(lex *lexer) token {
 		}
 	}
 }
-
-// TODO: support head where the list has multiple values, like "require ( m1 v1; m2 v2)".
 
 // Unmarshal values takes a sequence of Values and unmarshals them into p.
 // p must be a pointer to a struct.

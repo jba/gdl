@@ -96,7 +96,7 @@ loop:
 			l.lineno++
 		}
 		switch c {
-		case '\n', '(', ')', ';':
+		case '\n', '(', ')', '{', '}', ';':
 			s = s[sz:]
 			// Semicolons look like newlines.
 			if c == ';' {
@@ -182,14 +182,14 @@ loop:
 	}
 }
 
-// stop chars: any whitespace; parens; semicolon.
+// stop chars: any whitespace; parens; braces; semicolon.
 func scanWord(s string) (string, string) {
 	for i, r := range s {
 		if unicode.IsSpace(r) {
 			return s[:i], s[i:]
 		}
 		switch r {
-		case '(', ')', ';':
+		case '(', ')', '{', '}', ';':
 			return s[:i], s[i:]
 		}
 	}
