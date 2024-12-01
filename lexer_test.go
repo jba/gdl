@@ -50,7 +50,7 @@ func TestLexerNext(t *testing.T) {
 		{"a b\\\nc", []token{word("a"), word("b\\"), char('\n'), word("c")}},
 		{"a b \\\nc", []token{word("a"), word("b"), word("c")}},
 	} {
-		l := newLexer(tc.in)
+		l := newLexer(tc.in, "testcase")
 		var got []token
 		for {
 			tok := l.next()

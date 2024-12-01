@@ -5,6 +5,7 @@
 package gdl
 
 import (
+	"path"
 	"reflect"
 	"slices"
 	"strings"
@@ -15,6 +16,8 @@ import (
 )
 
 // TODO: test errors
+
+var vfmt = format.New().IgnoreFields(Value{}, "File", "Line")
 
 func TestParseValue(t *testing.T) {
 	for _, tc := range []struct {
@@ -71,15 +74,15 @@ func TestParseValue(t *testing.T) {
 			},
 		},
 	} {
-		lex := newLexer(tc.in)
+		lex := newLexer(tc.in, "tc")
 		got, err := parseValue(lex.next(), lex)
 		if err != nil {
 			t.Errorf("%s: %v", tc.in, err)
 			continue
 		}
 		want := Value{Head: tc.wantHead, List: tc.wantList}
-		gf := format.Sprint(got)
-		wf := format.Sprint(want)
+		gf := vfmt.Sprint(got)
+		wf := vfmt.Sprint(want)
 		if gf != wf {
 			t.Errorf("%s: mismatch (-want, +got):\n%s", tc.in, diff.Format(gf, wf))
 		}
@@ -94,14 +97,9 @@ func TestParseValueError(t *testing.T) {
 		{"", "EOF"},
 		{"(\n) x", "close paren must be followed"},
 	} {
-		lex := newLexer(tc.in)
+		lex := newLexer(tc.in, "tc")
 		_, err := parseValue(lex.next(), lex)
-		if err == nil {
-			t.Fatalf("%s: no error", tc.in)
-		}
-		if !strings.Contains(err.Error(), tc.want) {
-			t.Errorf("%s: error %q does not contain %q", tc.in, err, tc.want)
-		}
+		matchError(t, tc.in, err, tc.want)
 	}
 }
 
@@ -118,16 +116,11 @@ func TestParse(t *testing.T) {
 		{in: "1;2", wantErr: "more than one value"},
 	} {
 		got, err := Parse(tc.in)
-		if err != nil {
-			if tc.wantErr == "" {
-				t.Errorf("%q: got error %q, want none", tc.in, err)
-			}
-			if !strings.Contains(err.Error(), tc.wantErr) {
-				t.Errorf("%q: got error %q, should contain %q", tc.in, err, tc.wantErr)
-			}
-			continue
-		}
-		if g, w := format.Sprint(got), format.Sprint(tc.want); g != w {
+		if tc.wantErr != "" {
+			matchError(t, tc.in, err, tc.wantErr)
+		} else if err != nil {
+			t.Errorf("%q: unexpected error %q", tc.in, err)
+		} else if g, w := vfmt.Sprint(got), vfmt.Sprint(tc.want); g != w {
 			t.Errorf("%q:\ngot  %s\nwant %s", tc.in, g, w)
 		}
 	}
@@ -308,13 +301,14 @@ func TestValues(t *testing.T) {
 		if err := errf(); err != nil {
 			t.Fatalf("%q: %v", tc.in, err)
 		}
-		if g, w := format.Sprint(got), format.Sprint(tc.want); g != w {
+		if g, w := vfmt.Sprint(got), vfmt.Sprint(tc.want); g != w {
 			t.Errorf("%q:\ngot  %s\nwant %s", tc.in, g, w)
 		}
 	}
 }
 
-func TestUnmarshal(t *testing.T) {
+// TODO: test errors
+func TestUnmarshalValue(t *testing.T) {
 	type S1 struct {
 		Name   string
 		Points int `gdl:"score"`
@@ -387,6 +381,26 @@ func TestUnmarshal(t *testing.T) {
 		})
 	}
 }
+func TestUnmarshalValueError(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		p    any
+		want string
+	}{
+		{"a (b)", []string(nil), "both a head and a list"},
+		{"a (b)", map[string]string{}, "map*needs empty head"},
+		{"x", make(chan int), "cannot unmarshal into"},
+		{"x y", 0, "scalar*one head"},
+	} {
+		val, err := Parse(tc.in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := reflect.New(reflect.TypeOf(tc.p))
+		p.Elem().Set(reflect.ValueOf(tc.p)) // for, e.g., preserving length of slices
+		matchError(t, tc.in, UnmarshalValue(val, p.Interface()), tc.want)
+	}
+}
 
 func TestUnmarshalValues(t *testing.T) {
 	type Name struct {
@@ -442,5 +456,20 @@ func TestUnmarshalValues(t *testing.T) {
 		if g, w := format.Sprint(got), format.Sprint(tc.want); g != w {
 			t.Errorf("%q:\ngot  %s\nwant %s", tc.in, g, w)
 		}
+	}
+}
+
+func matchError(t *testing.T, prefix string, err error, glob string) {
+	t.Helper()
+	if err == nil {
+		t.Errorf("%s: got nil, want error", prefix)
+		return
+	}
+	m, err1 := path.Match("*"+glob+"*", err.Error())
+	if err1 != nil {
+		t.Fatalf("bad glob: %q: %v", glob, err1)
+	}
+	if !m {
+		t.Errorf("%s:\ngot error %q\nwant it to match %q", prefix, err, glob)
 	}
 }

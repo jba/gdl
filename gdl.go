@@ -45,6 +45,21 @@ import (
 type Value struct {
 	Head []string
 	List []Value
+	File string
+	Line int
+}
+
+func (v Value) Pos() string {
+	if v.File == "" && v.Line == 0 {
+		return "?"
+	}
+	if v.Line == 0 {
+		return v.File
+	}
+	if v.File == "" {
+		return fmt.Sprintf("?:%d", v.Line)
+	}
+	return fmt.Sprintf("%s:%d", v.File, v.Line)
 }
 
 // ParseFile returns a sequence of Values parsed from the contents of the file.
@@ -86,19 +101,19 @@ func Parse(s string) (Value, error) {
 func parse(s, filename string) (iter.Seq[Value], func() error) {
 	var err error
 	iter := func(yield func(Value) bool) {
-		lex := newLexer(s)
+		lex := newLexer(s, filename)
 		for {
 			tok := skipNewlines(lex)
 			switch tok.kind {
 			case tokEOF:
 				return
 			case ')':
-				err = fmt.Errorf("%s:%d: unexpected close paren", filename, lex.lineno)
+				err = fmt.Errorf("%s:%d: unexpected close paren", lex.filename, lex.lineno)
 				return
 			default:
 				val, e := parseValue(tok, lex)
 				if e != nil {
-					e = fmt.Errorf("%s:%d: %w", filename, lex.lineno, e)
+					e = fmt.Errorf("%s:%d: %w", lex.filename, lex.lineno, e)
 					return
 				}
 				if !yield(val) {
@@ -110,6 +125,15 @@ func parse(s, filename string) (iter.Seq[Value], func() error) {
 	return iter, func() error { return err }
 }
 
+func newValue(head []string, list []Value, lex *lexer) Value {
+	return Value{
+		Head: head,
+		List: list,
+		File: lex.filename,
+		Line: lex.lineno,
+	}
+}
+
 // Called at line start. Ends at the next line start or EOF.
 // Only called when there is a value.
 func parseValue(tok token, lex *lexer) (Value, error) {
@@ -119,13 +143,13 @@ func parseValue(tok token, lex *lexer) (Value, error) {
 		case tokEOF:
 			// Accept a value that isn't followed by a newline.
 			if len(head) > 0 {
-				return Value{Head: head}, nil
+				return newValue(head, nil, lex), nil
 			}
 			return Value{}, io.ErrUnexpectedEOF
 
 		case '\n':
 			if len(head) > 0 {
-				return Value{Head: head}, nil
+				return newValue(head, nil, lex), nil
 			}
 			return Value{}, errors.New("unexpected newline")
 			// // blank line
@@ -146,14 +170,14 @@ func parseValue(tok token, lex *lexer) (Value, error) {
 			if err != nil {
 				return Value{}, err
 			}
-			return Value{Head: head, List: list}, nil
+			return newValue(head, list, lex), nil
 
 		case ')':
 			lex.unget(tok)
 			if len(head) == 0 {
 				panic("bad close paren")
 			}
-			return Value{Head: head}, nil
+			return newValue(head, nil, lex), nil
 
 		case tokErr:
 			return Value{}, tok.err
@@ -232,15 +256,15 @@ func UnmarshalValues(vals iter.Seq[Value], p any) (err error) {
 	seen := map[string]bool{}
 	for val := range vals {
 		if len(val.Head) == 0 {
-			return fmt.Errorf("value %+v has no head", val)
+			return fmt.Errorf("%s: value has no head", val.Pos())
 		}
 		if len(val.Head[0]) == 0 {
-			return fmt.Errorf("value %+v has empty head", val)
+			return fmt.Errorf("%s: value has empty head", val.Pos())
 		}
 		key := val.Head[0]
 		sf, ok := matchField(key, sfs)
 		if !ok {
-			return fmt.Errorf("no field in struct matches %q", key)
+			return fmt.Errorf("%s: no field in struct matches %q", val.Pos(), key)
 		}
 		fv, err := rv.FieldByIndexErr(sf.Index)
 		if err != nil {
@@ -254,7 +278,7 @@ func UnmarshalValues(vals iter.Seq[Value], p any) (err error) {
 			}
 		} else {
 			if seen[key] {
-				return fmt.Errorf("key %q occurs more than once", key)
+				return fmt.Errorf("%s: key %q occurs more than once", val.Pos(), key)
 			}
 			seen[key] = true
 			if err := unmarshalReflectValue(val, fv); err != nil {
@@ -284,16 +308,17 @@ func matchField(s string, fields []reflect.StructField) (reflect.StructField, bo
 	return reflect.StructField{}, false
 }
 
-func UnmarshalValue(v Value, p any) error {
+func UnmarshalValue(v Value, p any) (err error) {
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("%s: unmarshaling into %T: %w", v.Pos(), p, err)
+		}
+	}()
+
 	return unmarshalReflectValue(v, reflect.ValueOf(p))
 }
 
-func unmarshalReflectValue(v Value, rv reflect.Value) (err error) {
-	defer func() {
-		if err != nil {
-			err = fmt.Errorf("gdl.UnmarshalValue into %s: %w", rv.Type(), err)
-		}
-	}()
+func unmarshalReflectValue(v Value, rv reflect.Value) error {
 
 	switch rv.Kind() {
 
@@ -309,7 +334,7 @@ func unmarshalReflectValue(v Value, rv reflect.Value) (err error) {
 			// TODO: optimize.
 			var vs []Value
 			for _, h := range v.Head {
-				vs = append(vs, Value{Head: []string{h}})
+				vs = append(vs, Value{Head: []string{h}, File: v.File, Line: v.Line})
 			}
 			return unmarshalSliceOrArray(vs, rv)
 		}
@@ -332,7 +357,7 @@ func unmarshalReflectValue(v Value, rv reflect.Value) (err error) {
 		return fmt.Errorf("cannot unmarshal into type %s", rv.Type())
 	default:
 		if len(v.Head) != 1 || len(v.List) != 0 {
-			return errors.New("scalar requires Value with only one Head element")
+			return errors.New("scalar requires Value with only one head element")
 		}
 		return unmarshalScalar(v.Head[0], rv)
 	}

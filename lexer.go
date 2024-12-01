@@ -24,14 +24,15 @@ import (
 
 type lexer struct {
 	s        string
+	filename string
 	lineno   int
 	ungotten bool
 	untok    token
 	errtok   token
 }
 
-func newLexer(s string) *lexer {
-	return &lexer{s: s, lineno: 1}
+func newLexer(s, filename string) *lexer {
+	return &lexer{s: s, filename: filename, lineno: 1}
 }
 
 const (
