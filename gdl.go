@@ -39,6 +39,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 type Value struct {
@@ -200,8 +201,88 @@ func skipNewlines(lex *lexer) token {
 	}
 }
 
-// func UnmarshalValues(vals []Value, p any) error {
-// }
+// TODO: support head where the list has multiple values, like "require ( m1 v1; m2 v2)".
+
+// Unmarshal values takes a sequence of Values and unmarshals them into p.
+// p must be a pointer to a struct.
+// Each Value in the sequence must have a non-empty head. The first head value
+// must match a field in the struct.
+// If that field has a slice type, the value is unmarshaled and appended to the slice.
+// Otherwise, the first head value must be unique in the sequence. It is unmarshaled
+// into the field.
+//
+// The head is matched against the exported fields of the struct case-insensitively.
+// If a field name doesn't match, the match is retried with the plural of head.
+// The plural rules are very simple: if the word ends in 's' or 'x', then
+// "es" is appended to it; otherwise "s" is appended.
+func UnmarshalValues(vals iter.Seq[Value], p any) (err error) {
+	rv := reflect.ValueOf(p)
+	if rv.Kind() != reflect.Pointer || rv.Elem().Kind() != reflect.Struct {
+		return fmt.Errorf("gdl.UnmarshalValues: second argument must be pointer to struct, not %T", p)
+	}
+	rv = rv.Elem()
+
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("gdl.UnmarshalValues into %s: %w", rv.Type(), err)
+		}
+	}()
+
+	sfs := reflect.VisibleFields(rv.Type())
+	seen := map[string]bool{}
+	for val := range vals {
+		if len(val.Head) == 0 {
+			return fmt.Errorf("value %+v has no head", val)
+		}
+		if len(val.Head[0]) == 0 {
+			return fmt.Errorf("value %+v has empty head", val)
+		}
+		key := val.Head[0]
+		sf, ok := matchField(key, sfs)
+		if !ok {
+			return fmt.Errorf("no field in struct matches %q", key)
+		}
+		fv, err := rv.FieldByIndexErr(sf.Index)
+		if err != nil {
+			// TODO: create the nil pointers.
+			return err
+		}
+		if fv.Kind() == reflect.Slice || fv.Kind() == reflect.Array {
+			fv.Set(reflect.Append(fv, reflect.Zero(fv.Type().Elem())))
+			if err := unmarshalReflectValue(val, fv.Index(fv.Len()-1)); err != nil {
+				return err
+			}
+		} else {
+			if seen[key] {
+				return fmt.Errorf("key %q occurs more than once", key)
+			}
+			seen[key] = true
+			if err := unmarshalReflectValue(val, fv); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// TODO: support struct tags here.
+
+func matchField(s string, fields []reflect.StructField) (reflect.StructField, bool) {
+	var ps string
+	r, _ := utf8.DecodeLastRuneInString(s)
+	switch r {
+	case 's', 'x':
+		ps = s + "es"
+	default:
+		ps = s + "s"
+	}
+	for _, sf := range fields {
+		if strings.EqualFold(s, sf.Name) || strings.EqualFold(ps, sf.Name) {
+			return sf, true
+		}
+	}
+	return reflect.StructField{}, false
+}
 
 func UnmarshalValue(v Value, p any) error {
 	return unmarshalReflectValue(v, reflect.ValueOf(p))
@@ -301,8 +382,7 @@ func unmarshalMap(v Value, rv reflect.Value) error {
 }
 
 func unmarshalStruct(v Value, rv reflect.Value) error {
-	// Values in list must have a at least one head, the field name.
-	// rt := rv.Type()
+	// Values in v.List must have a at least one head, the field name.
 	valuesByKey := map[string]Value{}
 	for _, lv := range v.List {
 		if len(lv.Head) == 0 {
@@ -315,6 +395,7 @@ func unmarshalStruct(v Value, rv reflect.Value) error {
 		valuesByKey[key] = lv
 	}
 	for _, f := range reflect.VisibleFields(rv.Type()) {
+		// TODO: create the nil pointers that would cause FieldByIndexErr to return an error.
 		fv, err := rv.FieldByIndexErr(f.Index)
 		if err != nil {
 			return err

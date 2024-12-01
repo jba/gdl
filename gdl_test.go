@@ -387,3 +387,60 @@ func TestUnmarshal(t *testing.T) {
 		})
 	}
 }
+
+func TestUnmarshalValues(t *testing.T) {
+	type Name struct {
+		Name string `gdl:"1"`
+	}
+	type Require struct {
+		Mod     string `gdl:"1"`
+		Version string `gdl:"2"`
+	}
+	type Replace struct {
+		From string `gdl:"1"`
+		Op   string `gdl:"2"`
+		To   string `gdl:"3"`
+	}
+	type S struct {
+		Name     Name
+		Requires []Require
+		Replaces []*Replace
+	}
+
+	for _, tc := range []struct {
+		in      string
+		want    S
+		wantErr string
+	}{
+		{
+			in: "name test; require m1 v1; require m2 v2; replace a -> b",
+			want: S{
+				Name:     Name{"test"},
+				Requires: []Require{{Mod: "m1", Version: "v1"}, {Mod: "m2", Version: "v2"}},
+				Replaces: []*Replace{{From: "a", Op: "->", To: "b"}},
+			},
+		},
+		{
+			in:      "name a; name b",
+			wantErr: "occurs more than once",
+		},
+	} {
+		var got S
+		vals, errf := Values(tc.in)
+		if err := UnmarshalValues(vals, &got); err != nil {
+			if tc.wantErr == "" {
+				t.Fatalf("%q: %v", tc.in, err)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("%q: got error %q, want it to contain %q", tc.in, err, tc.wantErr)
+			}
+			continue
+		}
+		if err := errf(); err != nil {
+			t.Fatal(err)
+		}
+		if g, w := format.Sprint(got), format.Sprint(tc.want); g != w {
+			t.Errorf("%q:\ngot  %s\nwant %s", tc.in, g, w)
+		}
+	}
+}
