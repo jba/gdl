@@ -26,8 +26,8 @@
 
 //
 
-// gdl implements a decription language inspired by the file format of go.mod
-// and similar files.
+// The gdl package implements a decription language inspired by the file format of
+// go.mod and similar files. The name "gdl" is an acronym for Go Description Language.
 //
 // # Lexical structure
 //
@@ -38,36 +38,41 @@
 // onto the next line.
 //
 // A word is a sequence of non-space characters ending in a delimiter or separator.
-// Words can be double-quoted or backquoted as in Go, with the same syntax.
+// Words can be double-quoted or backquoted as in Go.
 // Comments begin with "//" and extend to the end of the line.
 // Backslashes are ignored inside a comment.
 //
 // Parentheses mean repetition, as in Go.
-// For example,
+// For example, the text
 //
 //	  require (
 //	      example.com/a v1.2.3
 //	      example.com/b v0.2.5
 //	  )
 //
-//	is equivalent to the two values
+//	is equivalent to the two lines
 //
 //	  require example.com/a v1.2.3
 //	  require example.com/b v0.2.5
 //
-// TODO: ID Fields.
+// A [Value] is a sequence of words along with its position in a file or string.
+// [Parse] takes a string and returns a sequence of Values; [ParseFile] does
+// the same for a file.
+// [Unmarshal] unpacks a [Value] or slice of Values into a Go struct or other type.
 package gdl
 
 import (
 	"fmt"
 )
 
+// A Value is a sequence of words with their position.
 type Value struct {
 	Words []string
 	File  string
 	Line  int
 }
 
+// Pos returns the position of the value as "file:line".
 func (l Value) Pos() string {
 	if l.File == "" && l.Line == 0 {
 		return "?"

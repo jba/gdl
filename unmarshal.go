@@ -19,6 +19,10 @@ import (
 // The struct's fields should all be slices of struct type.
 // The first word of each Value selects the field; see [UnmarshalValue] for
 // details.
+//
+// TODO: a field can also be a single struct or scalar, or a slice of scalars.
+// Scalar: Value must have just two words, "fieldname value".
+// Single: second occurrence is an error.
 func UnmarshalValues(vals []Value, p any) (err error) {
 	rv := reflect.ValueOf(p)
 	if rv.Kind() != reflect.Pointer || rv.Elem().Kind() != reflect.Struct {
@@ -46,7 +50,7 @@ func UnmarshalValues(vals []Value, p any) (err error) {
 //
 // into a value of this type:
 //
-//	type Thing struct { A int; B string; C []string}
+//	type Thing struct { A int; B string; C []string }
 //
 // results in this value:
 //
